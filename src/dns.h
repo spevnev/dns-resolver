@@ -19,8 +19,6 @@
 #define CLASS_IN 1
 
 #define OPCODE_QUERY 0
-#define OPCODE_INVERSE_QUERY 1
-#define OPCODE_STATUS 2
 
 #define RCODE_SUCCESS 0
 #define RCODE_FORMAT_ERROR 1
@@ -37,7 +35,9 @@ typedef struct {
     uint8_t opcode : 4;
     uint8_t is_response : 1;
     uint8_t response_code : 4;
-    uint8_t _reserved : 3;
+    uint8_t _reserved : 1;
+    uint8_t checking_disabled : 1;
+    uint8_t authentic_data : 1;
     uint8_t recursion_available : 1;
     uint16_t question_count;
     uint16_t answer_count;
@@ -55,11 +55,13 @@ typedef struct {
     } data;
 } ResourceRecord;
 
-uint16_t write_request_header(uint8_t *buffer, bool recursion_desired, uint8_t opcode, uint16_t question_count);
-void write_question(uint8_t *buffer, const char *domain, uint16_t type);
+uint16_t get_qtype(const char *type);
 
-uint8_t *read_response_header(uint8_t *buffer, DNSHeader *header);
-uint8_t *read_question(uint8_t *message, uint8_t *buffer);
-uint8_t *read_resource_record(uint8_t *message, uint8_t *buffer, ResourceRecord *rr);
+ssize_t write_request(uint8_t *buffer, bool recursion_desired, const char *domain, uint16_t qtype, uint16_t *id);
+
+const uint8_t *read_response_header(const uint8_t *ptr, const uint8_t *end, DNSHeader *header, uint16_t req_id);
+const uint8_t *validate_question(const uint8_t *message, const uint8_t *ptr, const uint8_t *end, uint16_t req_qtype,
+                                 const char *req_domain);
+const uint8_t *read_resource_record(const uint8_t *message, const uint8_t *ptr, const uint8_t *end, ResourceRecord *rr);
 
 #endif  // DNS_H
