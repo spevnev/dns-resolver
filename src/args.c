@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include "error.h"
+#include "vector.h"
 
 typedef enum {
     TYPE_BOOL,
@@ -61,17 +62,14 @@ static void parse_arg(Option *option, char *arg_value) {
 }
 
 static Option *new_option(char short_name, const char *name, const char *description, bool show_default) {
-    if (options.length >= options.capacity) {
-        options.capacity = options.capacity == 0 ? 16 : options.capacity * 2;
-        options.data = realloc(options.data, options.capacity * sizeof(*options.data));
-        if (options.data == NULL) OUT_OF_MEMORY();
-    }
-    Option *option = &options.data[options.length++];
-    option->short_name = short_name;
-    option->name = name;
-    option->description = description;
-    option->show_default = show_default;
-    return option;
+    Option option = {
+        .show_default = show_default,
+        .short_name = short_name,
+        .name = name,
+        .description = description,
+    };
+    VECTOR_PUSH(&options, option);
+    return VECTOR_TOP(&options);
 }
 
 bool *option_bool(char short_name, const char *name, const char *description, bool show_default, bool default_value) {
