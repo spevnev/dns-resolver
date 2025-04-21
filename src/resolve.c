@@ -19,6 +19,7 @@
 #include "vector.h"
 
 VECTOR_TYPEDEF(RRVec, ResourceRecord);
+VECTOR_TYPEDEF(IPVec, in_addr_t);
 
 // https://www.iana.org/domains/root/servers
 static const char *ROOT_NAMESERVER_IPS[] = {
@@ -26,10 +27,25 @@ static const char *ROOT_NAMESERVER_IPS[] = {
     "198.97.190.53", "192.36.148.17", "192.58.128.30", "193.0.14.129", "199.7.83.42",    "202.12.27.33",
 };
 
-static void add_root_servers(CstrVec *servers) {
+static void free_rrs(RRVec *rrs) {
+    for (uint32_t i = 0; i < rrs->length; i++) free_rr(&rrs->data[i]);
+    VECTOR_FREE(rrs);
+}
+
+static bool address_equals(struct sockaddr_in a, struct sockaddr_in b) {
+    return a.sin_port == b.sin_port && a.sin_addr.s_addr == b.sin_addr.s_addr;
+}
+
+static void add_domain(IPVec *servers, const char *ip_str) {
+    in_addr_t ip;
+    if (inet_pton(AF_INET, ip_str, &ip) != 1) ERROR("Invalid IP address: %s", ip_str);
+    VECTOR_PUSH(servers, ip);
+}
+
+static void add_root_servers(IPVec *servers) {
     // TODO: randomize order of servers?
     for (uint32_t i = 0; i < sizeof(ROOT_NAMESERVER_IPS) / sizeof(*ROOT_NAMESERVER_IPS); i++) {
-        VECTOR_PUSH(servers, ROOT_NAMESERVER_IPS[i]);
+        add_domain(servers, ROOT_NAMESERVER_IPS[i]);
     }
 }
 
@@ -38,8 +54,7 @@ static void print_resource_record(ResourceRecord *rr) {
     switch (rr->type) {
         case TYPE_A: {
             char buffer[INET_ADDRSTRLEN];
-            struct in_addr addr = {.s_addr = rr->data.ip4_address};
-            if (inet_ntop(AF_INET, &addr, buffer, sizeof(buffer)) == NULL) PERROR("inet_ntop");
+            if (inet_ntop(AF_INET, &rr->data.ip4_address, buffer, sizeof(buffer)) == NULL) PERROR("inet_ntop");
             printf("%s", buffer);
         } break;
         case TYPE_NS:
@@ -110,39 +125,36 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
     if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) PERROR("setsockopt");
 
     // Create list of nameservers.
-    CstrVec servers = {0};
-    // TODO: should it use root always?
+    IPVec servers = {0};
     add_root_servers(&servers);
-    if (nameserver_ip != NULL) VECTOR_PUSH(&servers, nameserver_ip);
+    if (nameserver_ip != NULL) add_domain(&servers, nameserver_ip);
 
     // Set initial search name.
     char sname[MAX_DOMAIN_LENGTH + 1];
     set_sname(domain, sname);
 
-    // TODO: rename:
     bool found = false;
     ResourceRecord rr = {0};
     uint8_t buffer[MAX_UDP_PAYLOAD_SIZE];
+    struct sockaddr_in req_addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(port),
+        .sin_zero = {0},
+    };
     while (!found && servers.length > 0) {
-        const char *server_ip = VECTOR_POP(&servers);
+        // Get nameserver IP.
+        in_addr_t server_ip = VECTOR_POP(&servers);
+        req_addr.sin_addr.s_addr = server_ip;
 
-        printf("Resolving %s using %s.\n", sname, server_ip);
-
-        // Get nameserver's address.
-        struct sockaddr_in req_addr = {
-            .sin_family = AF_INET,
-            .sin_port = htons(port),
-            .sin_zero = {0},
-        };
-        if (inet_pton(AF_INET, server_ip, &req_addr.sin_addr) != 1) {
-            ERROR("Invalid nameserver IP address: %s", server_ip);
-        }
+        char addr_buffer[INET_ADDRSTRLEN];
+        if (inet_ntop(AF_INET, &server_ip, addr_buffer, sizeof(addr_buffer)) == NULL) PERROR("inet_ntop");
+        printf("Resolving %s using %s.\n", sname, addr_buffer);
 
         // Send request.
         uint16_t id;
         ssize_t req_len = write_request(buffer, recursion_desired, sname, qtype, &id);
         if (sendto(fd, buffer, req_len, 0, (struct sockaddr *) &req_addr, sizeof(req_addr)) != req_len) {
-            if (errno == EAGAIN) {
+            if (errno == EAGAIN) {  // timeout
                 // Try other nameserver.
                 fprintf(stderr, "Request timeout.\n");
                 continue;
@@ -160,15 +172,14 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
             res_addr_len = sizeof(res_addr);
             res_len = recvfrom(fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &res_addr, &res_addr_len);
             if (res_len == -1) {
-                if (errno == EAGAIN) {
+                if (errno == EAGAIN) {  // timeout
                     retry = true;
                     break;
                 } else {
                     PERROR("recvfrom");
                 }
             }
-        } while (res_addr_len != sizeof(res_addr) || req_addr.sin_addr.s_addr != res_addr.sin_addr.s_addr
-                 || req_addr.sin_port != res_addr.sin_port);
+        } while (res_addr_len != sizeof(res_addr) || !address_equals(req_addr, res_addr));
         if (retry) {
             // Try other nameserver.
             fprintf(stderr, "Request timeout.\n");
@@ -214,19 +225,44 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
 
         // Read resource records.
         if (res_header.answer_count > 0) {
+            RRVec prev_rrs = {0};
             printf("Answer section:\n");
             for (uint16_t i = 0; i < res_header.answer_count; i++) {
                 ptr = read_resource_record(buffer, ptr, buffer_end, &rr);
                 print_resource_record(&rr);
+
+                if (strcasecmp(rr.domain, sname) != 0) {
+                    VECTOR_PUSH(&prev_rrs, rr);
+                    continue;
+                }
+
+                if (rr.type == qtype) {
+                    // RR has matching domain and type. Set `found` and print the rest of the response.
+                    found = true;
+                } else if (rr.type == TYPE_CNAME) {
+                    // Change sname to the alias.
+                    set_sname(rr.data.domain, sname);
+                    // Check previous RRs.
+                    if (check_rrs(prev_rrs, sname, qtype)) found = true;
+                }
+                free_rr(&rr);
             }
             printf("\n");
+            free_rrs(&prev_rrs);
         }
 
+        CstrVec authority_domains = {0};
         if (res_header.authority_count > 0) {
             printf("Authority section:\n");
             for (uint16_t i = 0; i < res_header.authority_count; i++) {
                 ptr = read_resource_record(buffer, ptr, buffer_end, &rr);
                 print_resource_record(&rr);
+                if (rr.type == TYPE_NS) {
+                    char *domain = malloc(MAX_DOMAIN_LENGTH + 1);
+                    if (domain == NULL) OUT_OF_MEMORY();
+                    memcpy(domain, rr.data.domain, strlen(rr.data.domain) + 1);
+                    VECTOR_PUSH(&authority_domains, domain);
+                }
             }
             printf("\n");
         }
@@ -236,9 +272,19 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
             for (uint16_t i = 0; i < res_header.additional_count; i++) {
                 ptr = read_resource_record(buffer, ptr, buffer_end, &rr);
                 print_resource_record(&rr);
+
+                if (rr.type != TYPE_A) continue;
+
+                for (uint32_t j = 0; j < authority_domains.length; j++) {
+                    if (strcasecmp(authority_domains.data[j], rr.domain) == 0) {
+                        VECTOR_PUSH(&servers, rr.data.ip4_address);
+                        break;
+                    }
+                }
             }
             printf("\n");
         }
+        VECTOR_FREE(&authority_domains);
     }
     if (!found) printf("Cannot resolve domain.\n");
 
