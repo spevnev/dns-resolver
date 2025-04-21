@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <strings.h>
 #include "error.h"
 #include "vector.h"
 
@@ -44,9 +45,9 @@ static Options options = {0};
 static void parse_arg(Option *option, char *arg_value) {
     switch (option->type) {
         case TYPE_BOOL:
-            if (strcmp(arg_value, "true") == 0) {
+            if (strcasecmp(arg_value, "true") == 0) {
                 option->value.bool_ = true;
-            } else if (strcmp(arg_value, "false") == 0) {
+            } else if (strcasecmp(arg_value, "false") == 0) {
                 option->value.bool_ = false;
             } else {
                 ERROR("Invalid option value, expected a boolean but found \"%s\"", arg_value);
@@ -126,7 +127,7 @@ char *parse_args(int argc, char **argv) {
                     break;
                 }
 
-                if (argc > 0 && (strcmp(argv[0], "false") == 0 || strcmp(argv[0], "true") == 0)) {
+                if (argc > 0 && (strcasecmp(argv[0], "false") == 0 || strcasecmp(argv[0], "true") == 0)) {
                     // -O false or -O true
                     parse_arg(option, SHIFT_ARGS());
                 } else {
@@ -164,7 +165,7 @@ char *parse_args(int argc, char **argv) {
                     break;
                 }
 
-                if (argc > 0 && (strcmp(argv[0], "false") == 0 || strcmp(argv[0], "true") == 0)) {
+                if (argc > 0 && (strcasecmp(argv[0], "false") == 0 || strcasecmp(argv[0], "true") == 0)) {
                     // --opt false or --opt true
                     parse_arg(option, SHIFT_ARGS());
                 } else {

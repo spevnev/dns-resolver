@@ -26,8 +26,10 @@
     } while (0)
 
 #define VECTOR_TOP(vec) (assert((vec)->length > 0), &(vec)->data[(vec)->length - 1])
-#define VECTOR_POP(vec) (assert((vec)->length > 0), (vec)->length--)
+#define VECTOR_POP(vec) (assert((vec)->length > 0), (vec)->data[--(vec)->length])
 
 #define VECTOR_FREE(vec) free((vec)->data)
+
+VECTOR_TYPEDEF(CstrVec, const char *);
 
 #endif  // VECTOR_H

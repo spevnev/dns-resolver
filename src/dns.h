@@ -15,6 +15,7 @@
 #define TYPE_CNAME 5
 #define TYPE_SOA 6
 #define TYPE_TXT 16
+#define TYPE_AAAA 28
 
 #define CLASS_IN 1
 
@@ -46,16 +47,38 @@ typedef struct {
 } DNSHeader;
 
 typedef struct {
-    char domain[MAX_DOMAIN_LENGTH];
+    char *buffer;
+    uint32_t length;
+    uint32_t capacity;
+    char **data;  // dynamic array of string, which are stored in buffer
+} TXT;
+
+typedef struct {
+    char domain[MAX_DOMAIN_LENGTH + 1];
     uint16_t type;
     uint32_t ttl;
     uint16_t data_length;
     union {
-        in_addr_t ip4_address;  // network order
+        in_addr_t ip4_address;
+        char domain[MAX_DOMAIN_LENGTH + 1];
+        struct {
+            char mname[MAX_DOMAIN_LENGTH + 1];
+            char rname[MAX_DOMAIN_LENGTH + 1];
+            uint32_t serial;
+            uint32_t refresh;
+            uint32_t retry;
+            uint32_t expire;
+            uint32_t min_ttl;
+        } soa;
+        TXT txt;
+        struct in6_addr ip6_address;
     } data;
 } ResourceRecord;
 
-uint16_t get_qtype(const char *type);
+uint16_t str_to_qtype(const char *str);
+const char *type_to_str(uint16_t type);
+
+void free_rr(ResourceRecord *rr);
 
 ssize_t write_request(uint8_t *buffer, bool recursion_desired, const char *domain, uint16_t qtype, uint16_t *id);
 

@@ -9,8 +9,6 @@
 #include "error.h"
 #include "resolve.h"
 
-static const char *ROOT_NAMESERVER_IP = "198.41.0.4";  // a.root-servers.net
-
 static void usage(const char *program) {
     printf("Usage: %s domain\n", program);
     printf("Options:\n");
@@ -19,10 +17,11 @@ static void usage(const char *program) {
 
 int main(int argc, char **argv) {
     bool *help = option_bool('h', "help", "show this message", false, false);
-    const char **nameserver_ip = option_str('s', "server", "specify nameserver IP address", false, ROOT_NAMESERVER_IP);
+    const char **nameserver_ip = option_str('s', "server", "specify nameserver IP address", false, NULL);
+    long *port = option_long('p', "port", "specify nameserver port", true, DNS_PORT);
     const char **qtype_str = option_str('t', "type", "specify query type", true, "A");
     long *timeout_sec = option_long('T', "timeout", "timeout in seconds", true, 10);
-    bool *recursion_desired = option_bool(0, "recurse", "set Recursion Desired", true, true);
+    bool *recursion_desired = option_bool('r', "recurse", "set Recursion Desired", true, true);
 
     const char *program = parse_args(argc, argv);
 
@@ -31,13 +30,14 @@ int main(int argc, char **argv) {
         return EXIT_SUCCESS;
     }
 
-    uint16_t qtype = get_qtype(*qtype_str);
+    uint16_t qtype = str_to_qtype(*qtype_str);
     if (*timeout_sec <= 0) ERROR("Timeout must be a positive integer");
+    if (*port <= 0 || *port > UINT16_MAX) ERROR("Port must be between 1 and 65535");
 
     if (!has_next_arg()) ERROR("Invalid arguments, domain is not specified");
-    char *domain = next_arg();
+    const char *domain = next_arg();
     if (has_next_arg()) ERROR("Expected one argument (domain) but found \"%s\" and \"%s\"", domain, next_arg());
 
-    resolve(domain, *nameserver_ip, qtype, *timeout_sec, *recursion_desired);
+    resolve(domain, *nameserver_ip, *port, qtype, *timeout_sec, *recursion_desired);
     return EXIT_SUCCESS;
 }

@@ -6,21 +6,51 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/random.h>
 #include "error.h"
+#include "vector.h"
 
 static const uint8_t LABEL_DATA_MASK = 63;      // 00111111
 static const uint8_t LABEL_TYPE_MASK = 192;     // 11000000
 static const uint8_t LABEL_TYPE_POINTER = 192;  // 11000000
 static const uint8_t LABEL_TYPE_NORMAL = 0;     // 00000000
 
-uint16_t get_qtype(const char *type) {
-    if (strcmp(type, "A") == 0) return TYPE_A;
-    if (strcmp(type, "NS") == 0) return TYPE_NS;
-    if (strcmp(type, "CNAME") == 0) return TYPE_CNAME;
-    if (strcmp(type, "SOA") == 0) return TYPE_SOA;
-    if (strcmp(type, "TXT") == 0) return TYPE_TXT;
-    ERROR("Invalid or unsupported query type \"%s\"", type);
+uint16_t str_to_qtype(const char *str) {
+    if (strcasecmp(str, "A") == 0) return TYPE_A;
+    if (strcasecmp(str, "NS") == 0) return TYPE_NS;
+    if (strcasecmp(str, "CNAME") == 0) return TYPE_CNAME;
+    if (strcasecmp(str, "SOA") == 0) return TYPE_SOA;
+    if (strcasecmp(str, "TXT") == 0) return TYPE_TXT;
+    if (strcasecmp(str, "AAAA") == 0) return TYPE_AAAA;
+    ERROR("Invalid or unsupported qtype \"%s\"", str);
+}
+
+const char *type_to_str(uint16_t type) {
+    switch (type) {
+        case TYPE_A:     return "A";
+        case TYPE_NS:    return "NS";
+        case TYPE_CNAME: return "CNAME";
+        case TYPE_SOA:   return "SOA";
+        case TYPE_TXT:   return "TXT";
+        case TYPE_AAAA:  return "AAAA";
+        default:         ERROR("Invalid or unsupported resource record type %u", type);
+    }
+}
+
+void free_rr(ResourceRecord *rr) {
+    switch (rr->type) {
+        case TYPE_A:     break;
+        case TYPE_NS:    break;
+        case TYPE_CNAME: break;
+        case TYPE_SOA:   break;
+        case TYPE_TXT:
+            free(rr->data.txt.buffer);
+            VECTOR_FREE(&rr->data.txt);
+            break;
+        case TYPE_AAAA: break;
+        default:        ERROR("Invalid or unsupported resource record type %u", rr->type);
+    }
 }
 
 static uint8_t *write_domain_name(uint8_t *buffer, const char *domain) {
@@ -78,6 +108,32 @@ static const uint8_t *read_domain_name(const uint8_t *response, const uint8_t *p
     return ptr;
 }
 
+// Copies the data (excluding first length byte) into buffer and replaces each
+// length byte with '\0' to transform it into array of null-terminated strings.
+// TXT's data is a dynamic array of strings pointing to the buffer.
+static const uint8_t *read_txt(const uint8_t *ptr, uint16_t data_length, TXT *txt) {
+    txt->buffer = malloc(data_length * sizeof(*txt->buffer));
+    if (txt->buffer == NULL) OUT_OF_MEMORY();
+    memcpy(txt->buffer, ptr + 1, data_length - 1);
+    txt->buffer[data_length - 1] = '\0';
+
+    char *cur = txt->buffer;
+    const uint8_t *end = ptr + data_length;
+    while (ptr < end) {
+        if (ptr + 1 > end) ERROR("Response is too short");
+        uint8_t length = *(ptr++);
+
+        if (ptr + length > end) ERROR("Response is too short");
+        ptr += length;
+
+        VECTOR_PUSH(txt, cur);
+        cur += length;
+        *(cur++) = '\0';
+    }
+    return ptr;
+}
+
+// Does not check the size because a request with single question always fits in max UDP payload.
 ssize_t write_request(uint8_t *buffer, bool recursion_desired, const char *domain, uint16_t qtype, uint16_t *id) {
     uint8_t *ptr = buffer;
 
@@ -138,9 +194,9 @@ const uint8_t *read_response_header(const uint8_t *ptr, const uint8_t *end, DNSH
 
 const uint8_t *validate_question(const uint8_t *response, const uint8_t *ptr, const uint8_t *end, uint16_t req_qtype,
                                  const char *req_domain) {
-    char domain[MAX_DOMAIN_LENGTH];
+    char domain[MAX_DOMAIN_LENGTH + 1];
     ptr = read_domain_name(response, ptr, end, domain);
-    if (strcmp(domain, req_domain) != 0) ERROR("Invalid domain in response");
+    if (strcasecmp(domain, req_domain) != 0) ERROR("Invalid domain in response");
 
     uint16_t qtype, qclass;
     if (ptr + sizeof(qtype) + sizeof(qclass) > end) ERROR("Response is too short");
@@ -182,11 +238,51 @@ const uint8_t *read_resource_record(const uint8_t *response, const uint8_t *ptr,
     if (ptr + rr->data_length > end) ERROR("Response is too short");
 
     switch (rr->type) {
-        case TYPE_A: {
+        case TYPE_A:
             if (rr->data_length != sizeof(rr->data.ip4_address)) ERROR("Invalid A data length");
             memcpy(&rr->data.ip4_address, ptr, sizeof(rr->data.ip4_address));
             ptr += sizeof(rr->data.ip4_address);
+            break;
+        case TYPE_NS:
+        case TYPE_CNAME: ptr = read_domain_name(response, ptr, ptr + rr->data_length, rr->data.domain); break;
+        case TYPE_SOA:   {
+            ptr = read_domain_name(response, ptr, end, rr->data.soa.mname);
+            ptr = read_domain_name(response, ptr, end, rr->data.soa.rname);
+
+            uint32_t serial, refresh, retry, expire, min_ttl;
+            if (ptr + sizeof(serial) + sizeof(refresh) + sizeof(retry) + sizeof(expire) + sizeof(min_ttl) > end) {
+                ERROR("Response is too short");
+            }
+
+            memcpy(&serial, ptr, sizeof(serial));
+            ptr += sizeof(serial);
+            rr->data.soa.serial = ntohl(serial);
+
+            memcpy(&refresh, ptr, sizeof(refresh));
+            ptr += sizeof(refresh);
+            rr->data.soa.refresh = ntohl(refresh);
+
+            memcpy(&retry, ptr, sizeof(retry));
+            ptr += sizeof(retry);
+            rr->data.soa.retry = ntohl(retry);
+
+            memcpy(&expire, ptr, sizeof(expire));
+            ptr += sizeof(expire);
+            rr->data.soa.expire = ntohl(expire);
+
+            memcpy(&min_ttl, ptr, sizeof(min_ttl));
+            ptr += sizeof(min_ttl);
+            rr->data.soa.min_ttl = ntohl(min_ttl);
         } break;
+        case TYPE_TXT:
+            rr->data.txt.length = 0;
+            ptr = read_txt(ptr, rr->data_length, &rr->data.txt);
+            break;
+        case TYPE_AAAA:
+            if (rr->data_length != sizeof(rr->data.ip6_address)) ERROR("Invalid AAAA data length");
+            memcpy(&rr->data.ip6_address, ptr, sizeof(rr->data.ip6_address));
+            ptr += sizeof(rr->data.ip6_address);
+            break;
         default: ERROR("Invalid or unsupported resource record type %d", rr->type);
     }
 
