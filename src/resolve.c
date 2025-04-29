@@ -18,7 +18,6 @@
 #include "error.h"
 #include "vector.h"
 
-VECTOR_TYPEDEF(RRVec, ResourceRecord);
 VECTOR_TYPEDEF(IPVec, in_addr_t);
 
 // https://www.iana.org/domains/root/servers
@@ -26,11 +25,6 @@ static const char *ROOT_NAMESERVER_IPS[] = {
     "198.41.0.4",    "170.247.170.2", "192.33.4.12",   "199.7.91.13",  "192.203.230.10", "192.5.5.241",  "192.112.36.4",
     "198.97.190.53", "192.36.148.17", "192.58.128.30", "193.0.14.129", "199.7.83.42",    "202.12.27.33",
 };
-
-static void free_rrs(RRVec *rrs) {
-    for (uint32_t i = 0; i < rrs->length; i++) free_rr(&rrs->data[i]);
-    VECTOR_FREE(rrs);
-}
 
 static bool address_equals(struct sockaddr_in a, struct sockaddr_in b) {
     return a.sin_port == b.sin_port && a.sin_addr.s_addr == b.sin_addr.s_addr;
@@ -47,33 +41,6 @@ static void add_root_servers(IPVec *servers) {
     for (uint32_t i = 0; i < sizeof(ROOT_NAMESERVER_IPS) / sizeof(*ROOT_NAMESERVER_IPS); i++) {
         add_domain(servers, ROOT_NAMESERVER_IPS[i]);
     }
-}
-
-static void print_resource_record(ResourceRecord *rr) {
-    printf("%-24s %-8u %-6s ", rr->domain, rr->ttl, type_to_str(rr->type));
-    switch (rr->type) {
-        case TYPE_A: {
-            char buffer[INET_ADDRSTRLEN];
-            if (inet_ntop(AF_INET, &rr->data.ip4_address, buffer, sizeof(buffer)) == NULL) PERROR("inet_ntop");
-            printf("%s", buffer);
-        } break;
-        case TYPE_NS:
-        case TYPE_CNAME: printf("%s", rr->data.domain); break;
-        case TYPE_SOA:
-            printf("%s %s %u %u %u %u %u", rr->data.soa.mname, rr->data.soa.rname, rr->data.soa.serial,
-                   rr->data.soa.refresh, rr->data.soa.retry, rr->data.soa.expire, rr->data.soa.min_ttl);
-            break;
-        case TYPE_TXT:
-            for (uint32_t i = 0; i < rr->data.txt.length; i++) printf(" \"%s\"", rr->data.txt.data[i]);
-            break;
-        case TYPE_AAAA: {
-            char buffer[INET6_ADDRSTRLEN];
-            if (inet_ntop(AF_INET6, &rr->data.ip6_address, buffer, sizeof(buffer)) == NULL) PERROR("inet_ntop");
-            printf("%s", buffer);
-        } break;
-        default: ERROR("Invalid or unsupported query type %u", rr->type);
-    }
-    printf("\n");
 }
 
 static void set_sname(const char *domain, char *sname) {
@@ -229,7 +196,7 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
             printf("Answer section:\n");
             for (uint16_t i = 0; i < res_header.answer_count; i++) {
                 ptr = read_resource_record(buffer, ptr, buffer_end, &rr);
-                print_resource_record(&rr);
+                print_rr(&rr);
 
                 if (strcasecmp(rr.domain, sname) != 0) {
                     VECTOR_PUSH(&prev_rrs, rr);
@@ -247,7 +214,6 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
                 }
                 free_rr(&rr);
             }
-            printf("\n");
             free_rrs(&prev_rrs);
         }
 
@@ -256,7 +222,7 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
             printf("Authority section:\n");
             for (uint16_t i = 0; i < res_header.authority_count; i++) {
                 ptr = read_resource_record(buffer, ptr, buffer_end, &rr);
-                print_resource_record(&rr);
+                print_rr(&rr);
                 if (rr.type == TYPE_NS) {
                     char *domain = malloc(MAX_DOMAIN_LENGTH + 1);
                     if (domain == NULL) OUT_OF_MEMORY();
@@ -264,14 +230,13 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
                     VECTOR_PUSH(&authority_domains, domain);
                 }
             }
-            printf("\n");
         }
 
         if (res_header.additional_count > 0) {
             printf("Additional section:\n");
             for (uint16_t i = 0; i < res_header.additional_count; i++) {
                 ptr = read_resource_record(buffer, ptr, buffer_end, &rr);
-                print_resource_record(&rr);
+                print_rr(&rr);
 
                 if (rr.type != TYPE_A) continue;
 
@@ -282,9 +247,10 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
                     }
                 }
             }
-            printf("\n");
         }
         VECTOR_FREE(&authority_domains);
+
+        printf("\n");
     }
     if (!found) printf("Cannot resolve domain.\n");
 

@@ -75,10 +75,12 @@ typedef struct {
     } data;
 } ResourceRecord;
 
+VECTOR_TYPEDEF(RRVec, ResourceRecord);
+
 uint16_t str_to_qtype(const char *str);
 const char *type_to_str(uint16_t type);
 
-void free_rr(ResourceRecord *rr);
+void print_rr(ResourceRecord *rr);
 
 ssize_t write_request(uint8_t *buffer, bool recursion_desired, const char *domain, uint16_t qtype, uint16_t *id);
 

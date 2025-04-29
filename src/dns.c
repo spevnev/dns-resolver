@@ -16,43 +16,6 @@ static const uint8_t LABEL_TYPE_MASK = 192;     // 11000000
 static const uint8_t LABEL_TYPE_POINTER = 192;  // 11000000
 static const uint8_t LABEL_TYPE_NORMAL = 0;     // 00000000
 
-uint16_t str_to_qtype(const char *str) {
-    if (strcasecmp(str, "A") == 0) return TYPE_A;
-    if (strcasecmp(str, "NS") == 0) return TYPE_NS;
-    if (strcasecmp(str, "CNAME") == 0) return TYPE_CNAME;
-    if (strcasecmp(str, "SOA") == 0) return TYPE_SOA;
-    if (strcasecmp(str, "TXT") == 0) return TYPE_TXT;
-    if (strcasecmp(str, "AAAA") == 0) return TYPE_AAAA;
-    ERROR("Invalid or unsupported qtype \"%s\"", str);
-}
-
-const char *type_to_str(uint16_t type) {
-    switch (type) {
-        case TYPE_A:     return "A";
-        case TYPE_NS:    return "NS";
-        case TYPE_CNAME: return "CNAME";
-        case TYPE_SOA:   return "SOA";
-        case TYPE_TXT:   return "TXT";
-        case TYPE_AAAA:  return "AAAA";
-        default:         ERROR("Invalid or unsupported resource record type %u", type);
-    }
-}
-
-void free_rr(ResourceRecord *rr) {
-    switch (rr->type) {
-        case TYPE_A:     break;
-        case TYPE_NS:    break;
-        case TYPE_CNAME: break;
-        case TYPE_SOA:   break;
-        case TYPE_TXT:
-            free(rr->data.txt.buffer);
-            VECTOR_FREE(&rr->data.txt);
-            break;
-        case TYPE_AAAA: break;
-        default:        ERROR("Invalid or unsupported resource record type %u", rr->type);
-    }
-}
-
 static uint8_t *write_domain_name(uint8_t *buffer, const char *domain) {
     const char *start = domain;
     const char *ch = domain;
@@ -72,6 +35,12 @@ static uint8_t *write_domain_name(uint8_t *buffer, const char *domain) {
 }
 
 static const uint8_t *read_domain_name(const uint8_t *response, const uint8_t *ptr, const uint8_t *end, char *domain) {
+    // Check root domain.
+    if (*ptr == 0) {
+        *domain = 0;
+        return ptr + 1;
+    }
+
     char *domain_ptr = domain;
     for (;;) {
         if (ptr + 1 > end) ERROR("Response is too short");
@@ -133,6 +102,55 @@ static const uint8_t *read_txt(const uint8_t *ptr, uint16_t data_length, TXT *tx
     return ptr;
 }
 
+uint16_t str_to_qtype(const char *str) {
+    if (strcasecmp(str, "A") == 0) return TYPE_A;
+    if (strcasecmp(str, "NS") == 0) return TYPE_NS;
+    if (strcasecmp(str, "CNAME") == 0) return TYPE_CNAME;
+    if (strcasecmp(str, "SOA") == 0) return TYPE_SOA;
+    if (strcasecmp(str, "TXT") == 0) return TYPE_TXT;
+    if (strcasecmp(str, "AAAA") == 0) return TYPE_AAAA;
+    ERROR("Invalid or unsupported qtype \"%s\"", str);
+}
+
+const char *type_to_str(uint16_t type) {
+    switch (type) {
+        case TYPE_A:     return "A";
+        case TYPE_NS:    return "NS";
+        case TYPE_CNAME: return "CNAME";
+        case TYPE_SOA:   return "SOA";
+        case TYPE_TXT:   return "TXT";
+        case TYPE_AAAA:  return "AAAA";
+        default:         ERROR("Invalid or unsupported resource record type %u", type);
+    }
+}
+
+void print_rr(ResourceRecord *rr) {
+    printf("%-24s %-8u %-6s ", rr->domain, rr->ttl, type_to_str(rr->type));
+    switch (rr->type) {
+        case TYPE_A: {
+            char buffer[INET_ADDRSTRLEN];
+            if (inet_ntop(AF_INET, &rr->data.ip4_address, buffer, sizeof(buffer)) == NULL) PERROR("inet_ntop");
+            printf("%s", buffer);
+        } break;
+        case TYPE_NS:
+        case TYPE_CNAME: printf("%s", rr->data.domain); break;
+        case TYPE_SOA:
+            printf("%s %s %u %u %u %u %u", rr->data.soa.mname, rr->data.soa.rname, rr->data.soa.serial,
+                   rr->data.soa.refresh, rr->data.soa.retry, rr->data.soa.expire, rr->data.soa.min_ttl);
+            break;
+        case TYPE_TXT:
+            for (uint32_t i = 0; i < rr->data.txt.length; i++) printf(" \"%s\"", rr->data.txt.data[i]);
+            break;
+        case TYPE_AAAA: {
+            char buffer[INET6_ADDRSTRLEN];
+            if (inet_ntop(AF_INET6, &rr->data.ip6_address, buffer, sizeof(buffer)) == NULL) PERROR("inet_ntop");
+            printf("%s", buffer);
+        } break;
+        default: ERROR("Invalid or unsupported query type %u", rr->type);
+    }
+    printf("\n");
+}
+
 // Does not check the size because a request with single question always fits in max UDP payload.
 ssize_t write_request(uint8_t *buffer, bool recursion_desired, const char *domain, uint16_t qtype, uint16_t *id) {
     uint8_t *ptr = buffer;
@@ -187,7 +205,7 @@ const uint8_t *read_response_header(const uint8_t *ptr, const uint8_t *end, DNSH
     if (!header->is_response) ERROR("Message is not a response");
     if (header->opcode != OPCODE_QUERY) ERROR("Invalid response opcode");
     if (header->id != req_id) ERROR("Response id does not match request id");
-    if (header->question_count != 1) ERROR("Question count is not 1");  // https://www.rfc-editor.org/rfc/rfc9619
+    if (header->question_count != 1) ERROR("Question count is not 1");  // RFC9619
 
     return ptr;
 }
