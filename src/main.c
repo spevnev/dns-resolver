@@ -52,5 +52,11 @@ int main(int argc, char **argv) {
         }
     }
 
+    // If qtype is ANY and response matches section 4.2 of RFC8482, print special message.
+    if (qtype == QTYPE_ANY && results.length == 1 && results.data[0].type == TYPE_HINFO
+        && strcmp(results.data[0].data.hinfo.cpu, "RFC8482") == 0 && results.data[0].data.hinfo.os[0] == '\0') {
+        printf("Nameserver does not support ANY query (see RFC8482).\n");
+    }
+
     return EXIT_SUCCESS;
 }
