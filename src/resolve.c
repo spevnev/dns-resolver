@@ -30,7 +30,7 @@ static bool address_equals(struct sockaddr_in a, struct sockaddr_in b) {
     return a.sin_port == b.sin_port && a.sin_addr.s_addr == b.sin_addr.s_addr;
 }
 
-static void add_domain(IPVec *servers, const char *ip_str) {
+static void add_ns(IPVec *servers, const char *ip_str) {
     in_addr_t ip;
     if (inet_pton(AF_INET, ip_str, &ip) != 1) ERROR("Invalid IP address: %s", ip_str);
     VECTOR_PUSH(servers, ip);
@@ -39,24 +39,12 @@ static void add_domain(IPVec *servers, const char *ip_str) {
 static void add_root_servers(IPVec *servers) {
     // TODO: randomize order of servers?
     for (uint32_t i = 0; i < sizeof(ROOT_NAMESERVER_IPS) / sizeof(*ROOT_NAMESERVER_IPS); i++) {
-        add_domain(servers, ROOT_NAMESERVER_IPS[i]);
+        add_ns(servers, ROOT_NAMESERVER_IPS[i]);
     }
 }
 
-static void set_sname(const char *domain, char *sname) {
-    size_t domain_len = strlen(domain);
-    // Remove trailing dot.
-    if (domain[domain_len - 1] == '.') domain_len--;
-
-    // Check length.
-    if (domain_len == 0) ERROR("Domain name is empty");
-    if (domain_len > MAX_DOMAIN_LENGTH) ERROR("Invalid domain name, maximum length is %d", MAX_DOMAIN_LENGTH);
-
-    memcpy(sname, domain, domain_len);
-    sname[domain_len] = '\0';
-}
-
-static bool check_rrs(RRVec rrs, char *sname, uint16_t qtype) {
+static bool check_rrs(RRVec *results, RRVec rrs, char *sname, uint16_t qtype) {
+    bool found = false;
     bool restart;
     do {
         restart = false;
@@ -65,21 +53,24 @@ static bool check_rrs(RRVec rrs, char *sname, uint16_t qtype) {
             if (strcasecmp(rr->domain, sname) != 0) continue;
 
             // Found it.
-            if (rr->type == qtype) return true;
+            if (rr->type == qtype) {
+                VECTOR_PUSH(results, *rr);
+                found = true;
+            }
 
             // Follow CNAME and restart search with new name.
             if (rr->type == TYPE_CNAME) {
-                set_sname(rr->data.domain, sname);
+                memcpy(sname, rr->data.domain, strlen(rr->data.domain) + 1);
                 restart = true;
                 break;
             }
         }
     } while (restart);
-    return false;
+    return found;
 }
 
-void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint16_t qtype, int timeout_sec,
-             bool recursion_desired) {
+RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uint16_t port, int timeout_sec,
+              uint32_t flags) {
     assert(domain != NULL && timeout_sec > 0);
 
     // Open IPv4 UDP socket.
@@ -94,13 +85,24 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
     // Create list of nameservers.
     IPVec servers = {0};
     add_root_servers(&servers);
-    if (nameserver_ip != NULL) add_domain(&servers, nameserver_ip);
+    if (nameserver_ip != NULL) add_ns(&servers, nameserver_ip);
 
     // Set initial search name.
     char sname[MAX_DOMAIN_LENGTH + 1];
-    set_sname(domain, sname);
+    size_t domain_len = strlen(domain);
+
+    // Remove trailing dot.
+    if (domain[domain_len - 1] == '.') domain_len--;
+
+    // Check length.
+    if (domain_len == 0) ERROR("Domain name is empty");
+    if (domain_len > MAX_DOMAIN_LENGTH) ERROR("Invalid domain name, maximum length is %d", MAX_DOMAIN_LENGTH);
+
+    memcpy(sname, domain, domain_len);
+    sname[domain_len] = '\0';
 
     bool found = false;
+    RRVec results = {0};
     ResourceRecord rr = {0};
     uint8_t buffer[MAX_UDP_PAYLOAD_SIZE];
     struct sockaddr_in req_addr = {
@@ -119,7 +121,7 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
 
         // Send request.
         uint16_t id;
-        ssize_t req_len = write_request(buffer, recursion_desired, sname, qtype, &id);
+        ssize_t req_len = write_request(buffer, flags & RESOLVE_RECURSION_DESIRED, sname, qtype, &id);
         if (sendto(fd, buffer, req_len, 0, (struct sockaddr *) &req_addr, sizeof(req_addr)) != req_len) {
             if (errno == EAGAIN) {  // timeout
                 // Try other nameserver.
@@ -209,15 +211,15 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
                 if (rr.type == qtype || qtype == QTYPE_ANY) {
                     // RR has matching domain and type. Set `found` and print the rest of the response.
                     found = true;
+                    VECTOR_PUSH(&results, rr);
                 } else if (rr.type == TYPE_CNAME) {
                     // Change sname to the alias.
-                    set_sname(rr.data.domain, sname);
+                    memcpy(sname, rr.data.domain, strlen(rr.data.domain) + 1);
                     // Check previous RRs.
-                    if (check_rrs(prev_rrs, sname, qtype)) found = true;
+                    if (check_rrs(&results, prev_rrs, sname, qtype)) found = true;
                 }
-                free_rr(&rr);
             }
-            free_rrs(&prev_rrs);
+            VECTOR_FREE(&prev_rrs);
         }
 
         CstrVec authority_domains = {0};
@@ -227,7 +229,7 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
                 ptr = read_resource_record(buffer, ptr, buffer_end, &rr);
                 print_rr(&rr);
                 if (rr.type == TYPE_NS) {
-                    char *domain = malloc(MAX_DOMAIN_LENGTH + 1);
+                    char *domain = malloc((MAX_DOMAIN_LENGTH + 1) * sizeof(*domain));
                     if (domain == NULL) OUT_OF_MEMORY();
                     memcpy(domain, rr.data.domain, strlen(rr.data.domain) + 1);
                     VECTOR_PUSH(&authority_domains, domain);
@@ -246,9 +248,19 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
                 for (uint32_t j = 0; j < authority_domains.length; j++) {
                     if (strcasecmp(authority_domains.data[j], rr.domain) == 0) {
                         VECTOR_PUSH(&servers, rr.data.ip4_address);
+                        // Delete current element by overwriting it with the last one.
+                        // If we are deleting the last one, we end up reassigning it
+                        // to itself and decreasing length.
+                        authority_domains.data[j] = VECTOR_POP(&authority_domains);
                         break;
                     }
                 }
+            }
+        }
+        for (uint32_t i = 0; i < authority_domains.length; i++) {
+            RRVec ns_addr = resolve(authority_domains.data[i], TYPE_A, NULL, DNS_PORT, timeout_sec, 0);
+            for (uint32_t j = 0; j < ns_addr.length; j++) {
+                VECTOR_PUSH(&servers, ns_addr.data[j].data.ip4_address);
             }
         }
         VECTOR_FREE(&authority_domains);
@@ -259,4 +271,6 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
 
     VECTOR_FREE(&servers);
     close(fd);
+
+    return results;
 }

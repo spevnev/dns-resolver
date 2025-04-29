@@ -3,8 +3,11 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "dns.h"
 
-void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint16_t qtype, int timeout_sec,
-             bool recursion_desired);
+#define RESOLVE_RECURSION_DESIRED 1
+
+RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uint16_t port, int timeout_sec,
+              uint32_t options);
 
 #endif  // RESOLVE_H

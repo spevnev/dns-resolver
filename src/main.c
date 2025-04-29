@@ -38,6 +38,19 @@ int main(int argc, char **argv) {
     const char *domain = next_arg();
     if (has_next_arg()) ERROR("Expected one argument (domain) but found \"%s\" and \"%s\"", domain, next_arg());
 
-    resolve(domain, *nameserver_ip, *port, qtype, *timeout_sec, *recursion_desired);
+    uint32_t options = 0;
+    if (*recursion_desired) options |= RESOLVE_RECURSION_DESIRED;
+
+    RRVec results = resolve(domain, qtype, *nameserver_ip, *port, *timeout_sec, options);
+
+    if (!*trace) {
+        if (results.length == 0) {
+            printf("No answer.\n");
+        } else {
+            printf("Answer:\n");
+            for (uint32_t i = 0; i < results.length; i++) print_rr(&results.data[i]);
+        }
+    }
+
     return EXIT_SUCCESS;
 }
