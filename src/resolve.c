@@ -104,12 +104,13 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
     bool found = false;
     RRVec results = {0};
     ResourceRecord rr = {0};
-    uint8_t buffer[MAX_UDP_PAYLOAD_SIZE];
     struct sockaddr_in req_addr = {
         .sin_family = AF_INET,
         .sin_port = htons(port),
         .sin_zero = {0},
     };
+    uint16_t buffer_size = EDNS_UDP_PAYLOAD_SIZE;
+    uint8_t buffer[buffer_size];
     while (!found && servers.length > 0) {
         // Get nameserver IP.
         in_addr_t server_ip = VECTOR_POP(&servers);
@@ -121,7 +122,7 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
 
         // Send request.
         uint16_t id;
-        ssize_t req_len = write_request(buffer, flags & RESOLVE_RECURSION_DESIRED, sname, qtype, &id);
+        ssize_t req_len = write_request(buffer, flags & RESOLVE_RECURSION_DESIRED, sname, qtype, &id, buffer_size);
         if (sendto(fd, buffer, req_len, 0, (struct sockaddr *) &req_addr, sizeof(req_addr)) != req_len) {
             if (errno == EAGAIN) {  // timeout
                 // Try other nameserver.
@@ -162,7 +163,7 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
         // Read response header.
         DNSHeader res_header;
         ptr = read_response_header(ptr, buffer_end, &res_header, id);
-        if (res_header.is_truncated) ERROR("TODO: truncated");
+        if (res_header.is_truncated) ERROR("Response is truncated");
 
         // Check response code.
         switch (res_header.response_code) {
@@ -238,9 +239,16 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
         }
 
         if (res_header.additional_count > 0) {
+            uint16_t extended_rcode = 0;
+
             printf("Additional section:\n");
             for (uint16_t i = 0; i < res_header.additional_count; i++) {
                 ptr = read_resource_record(buffer, ptr, buffer_end, &rr);
+                if (rr.type == TYPE_OPT) {
+                    extended_rcode = (((uint16_t) rr.data.opt.extended_rcode) << 4) | res_header.response_code;
+                    continue;
+                }
+
                 print_rr(&rr);
 
                 if (rr.type != TYPE_A) continue;
@@ -255,6 +263,14 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
                         break;
                     }
                 }
+            }
+            switch (extended_rcode) {
+                case RCODE_SUCCESS: break;
+                case RCODE_BAD_VERSION:
+                    // Try other nameserver.
+                    fprintf(stderr, "Nameserver does not support EDNS version %d.\n", EDNS_VERSION);
+                    continue;
+                default: ERROR("Invalid or unsupported response code %d", extended_rcode);
             }
         }
         for (uint32_t i = 0; i < authority_domains.length; i++) {

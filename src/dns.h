@@ -9,7 +9,9 @@
 #define DNS_PORT 53
 
 #define MAX_DOMAIN_LENGTH 255
+
 #define MAX_UDP_PAYLOAD_SIZE 512
+#define EDNS_UDP_PAYLOAD_SIZE 1280
 
 #define TYPE_A 1
 #define TYPE_NS 2
@@ -18,6 +20,7 @@
 #define TYPE_HINFO 13
 #define TYPE_TXT 16
 #define TYPE_AAAA 28
+#define TYPE_OPT 41
 
 #define QTYPE_ANY 255
 
@@ -31,6 +34,9 @@
 #define RCODE_NAME_ERROR 3
 #define RCODE_NOT_IMPLEMENTED 4
 #define RCODE_REFUSED 5
+#define RCODE_BAD_VERSION 16
+
+#define EDNS_VERSION 0
 
 typedef struct {
     uint16_t id;
@@ -40,9 +46,9 @@ typedef struct {
     uint8_t opcode : 4;
     uint8_t is_response : 1;
     uint8_t response_code : 4;
-    uint8_t _reserved : 1;
     uint8_t checking_disabled : 1;
     uint8_t authentic_data : 1;
+    uint8_t _reserved : 1;
     uint8_t recursion_available : 1;
     uint16_t question_count;
     uint16_t answer_count;
@@ -56,6 +62,14 @@ typedef struct {
     uint32_t capacity;
     char **data;  // dynamic array of string, which are stored in buffer
 } TXT;
+
+typedef struct {
+    uint8_t extended_rcode;
+    uint8_t version;
+    uint8_t _reserved : 7;
+    uint8_t dnssec_ok : 1;
+    uint8_t _reserved2 : 8;
+} OPTTTLFields;
 
 typedef struct {
     char domain[MAX_DOMAIN_LENGTH + 1];
@@ -80,6 +94,9 @@ typedef struct {
         } hinfo;
         TXT txt;
         struct in6_addr ip6_address;
+        struct {
+            uint8_t extended_rcode;
+        } opt;
     } data;
 } ResourceRecord;
 
@@ -90,7 +107,8 @@ const char *type_to_str(uint16_t type);
 
 void print_rr(ResourceRecord *rr);
 
-ssize_t write_request(uint8_t *buffer, bool recursion_desired, const char *domain, uint16_t qtype, uint16_t *id);
+ssize_t write_request(uint8_t *buffer, bool recursion_desired, const char *domain, uint16_t qtype, uint16_t *id,
+                      uint16_t udp_payload_size);
 
 const uint8_t *read_response_header(const uint8_t *ptr, const uint8_t *end, DNSHeader *header, uint16_t req_id);
 const uint8_t *validate_question(const uint8_t *message, const uint8_t *ptr, const uint8_t *end, uint16_t req_qtype,

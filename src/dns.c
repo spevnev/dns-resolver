@@ -171,31 +171,33 @@ void print_rr(ResourceRecord *rr) {
 }
 
 // Does not check the size because a request with single question always fits in max UDP payload.
-ssize_t write_request(uint8_t *buffer, bool recursion_desired, const char *domain, uint16_t qtype, uint16_t *id) {
+ssize_t write_request(uint8_t *buffer, bool recursion_desired, const char *domain, uint16_t qtype, uint16_t *id,
+                      uint16_t udp_payload_size) {
     uint8_t *ptr = buffer;
 
     if (getrandom(id, sizeof(*id), 0) != sizeof(*id)) PERROR("getrandom");
 
     DNSHeader header = {
         .id = htons(*id),
-        .is_response = false,
-        .opcode = OPCODE_QUERY,
-        .is_authoritative = false,
-        .is_truncated = false,
         .recursion_desired = recursion_desired,
-        .recursion_available = false,
-        ._reserved = 0,
+        .is_truncated = false,
+        .is_authoritative = false,
+        .opcode = OPCODE_QUERY,
+        .is_response = false,
+        .response_code = 0,
         .checking_disabled = false,
         .authentic_data = false,
-        .response_code = 0,
+        ._reserved = 0,
+        .recursion_available = false,
         .question_count = htons(1),
         .answer_count = 0,
         .authority_count = 0,
-        .additional_count = 0,
+        .additional_count = htons(1),
     };
     memcpy(ptr, &header, sizeof(header));
     ptr += sizeof(header);
 
+    // Write question:
     ptr = write_domain_name(ptr, domain);
 
     uint16_t net_qtype = htons(qtype);
@@ -205,6 +207,35 @@ ssize_t write_request(uint8_t *buffer, bool recursion_desired, const char *domai
     uint16_t net_class = htons(CLASS_IN);
     memcpy(ptr, &net_class, sizeof(net_class));
     ptr += sizeof(net_class);
+
+    // Write the OPT pseudo-RR (RFC6891):
+    // Domain must be root.
+    *(ptr++) = 0;
+
+    net_qtype = htons(TYPE_OPT);
+    memcpy(ptr, &net_qtype, sizeof(net_qtype));
+    ptr += sizeof(net_qtype);
+
+    // CLASS contains max UDP payload size.
+    uint16_t net_payload_size = htons(udp_payload_size);
+    memcpy(ptr, &net_payload_size, sizeof(net_payload_size));
+    ptr += sizeof(net_payload_size);
+
+    // TTL contains additional OPT fields.
+    OPTTTLFields opt_fields = {
+        .extended_rcode = 0,
+        .version = EDNS_VERSION,
+        ._reserved = 0,
+        .dnssec_ok = 0,
+        ._reserved2 = 0,
+    };
+    memcpy(ptr, &opt_fields, sizeof(opt_fields));
+    ptr += sizeof(opt_fields);
+
+    // No additional options.
+    uint16_t net_rdlen = 0;
+    memcpy(ptr, &net_rdlen, sizeof(net_rdlen));
+    ptr += sizeof(net_rdlen);
 
     return ptr - buffer;
 }
@@ -263,7 +294,8 @@ const uint8_t *read_resource_record(const uint8_t *response, const uint8_t *ptr,
 
     memcpy(&class, ptr, sizeof(class));
     ptr += sizeof(class);
-    if (ntohs(class) != CLASS_IN) ERROR("Resource record class is not Internet");
+    // Class must be Internet, or it is OPT RR whose CLASS contains UDP payload size (RFC6891).
+    if (rr->type != TYPE_OPT && ntohs(class) != CLASS_IN) ERROR("Resource record class is not Internet");
 
     memcpy(&ttl, ptr, sizeof(ttl));
     ptr += sizeof(ttl);
@@ -324,6 +356,18 @@ const uint8_t *read_resource_record(const uint8_t *response, const uint8_t *ptr,
             memcpy(&rr->data.ip6_address, ptr, sizeof(rr->data.ip6_address));
             ptr += sizeof(rr->data.ip6_address);
             break;
+        case TYPE_OPT: {
+            if (rr->domain[0] != 0) ERROR("OPT domain must be root");
+
+            OPTTTLFields opt_fields;
+            memcpy(&opt_fields, &ttl, sizeof(opt_fields));
+
+            rr->data.opt.extended_rcode = opt_fields.extended_rcode;
+            if (opt_fields.version > EDNS_VERSION) ERROR("Unsupported or invalid EDNS version");
+
+            // Ignore additional options.
+            ptr += rr->data_length;
+        } break;
         default: ERROR("Invalid or unsupported resource record type %d", rr->type);
     }
 
