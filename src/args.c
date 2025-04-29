@@ -95,6 +95,39 @@ const char **option_str(char short_name, const char *name, const char *descripti
     return &option->value.str;
 }
 
+void print_options(void) {
+    size_t max_name_len = 0;
+    for (uint32_t i = 0; i < options.length; i++) {
+        size_t name_length = strlen(options.data[i].name);
+        if (name_length > max_name_len) max_name_len = name_length;
+    }
+
+    for (uint32_t i = 0; i < options.length; i++) {
+        Option *option = &options.data[i];
+
+        if (option->short_name == '\0') {
+            printf("     ");
+        } else {
+            printf("  -%c,", option->short_name);
+        }
+
+        printf(" --%-*s  %s", (int) max_name_len, option->name, option->description);
+
+        if (!option->show_default) {
+            printf("\n");
+            continue;
+        }
+
+        printf(", default=");
+        switch (option->type) {
+            case TYPE_BOOL: printf(option->default_value.bool_ ? "true" : "false"); break;
+            case TYPE_LONG: printf("%ld", option->default_value.long_); break;
+            case TYPE_STR:  printf("%s", option->default_value.str); break;
+        }
+        printf("\n");
+    }
+}
+
 char *parse_args(int argc, char **argv) {
     options.args = argv;
 
@@ -191,37 +224,4 @@ char *next_arg(void) {
     assert(options.args_length > 0);
     options.args_length--;
     return *(options.args++);
-}
-
-void print_options(void) {
-    size_t max_name_len = 0;
-    for (uint32_t i = 0; i < options.length; i++) {
-        size_t name_length = strlen(options.data[i].name);
-        if (name_length > max_name_len) max_name_len = name_length;
-    }
-
-    for (uint32_t i = 0; i < options.length; i++) {
-        Option *option = &options.data[i];
-
-        if (option->short_name == '\0') {
-            printf("     ");
-        } else {
-            printf("  -%c,", option->short_name);
-        }
-
-        printf(" --%-*s  %s", (int) max_name_len, option->name, option->description);
-
-        if (!option->show_default) {
-            printf("\n");
-            continue;
-        }
-
-        printf(", default=");
-        switch (option->type) {
-            case TYPE_BOOL: printf(option->default_value.bool_ ? "true" : "false"); break;
-            case TYPE_LONG: printf("%ld", option->default_value.long_); break;
-            case TYPE_STR:  printf("%s", option->default_value.str); break;
-        }
-        printf("\n");
-    }
 }
