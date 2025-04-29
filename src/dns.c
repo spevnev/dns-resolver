@@ -77,6 +77,21 @@ static const uint8_t *read_domain_name(const uint8_t *response, const uint8_t *p
     return ptr;
 }
 
+static const uint8_t *read_char_string(const uint8_t *ptr, const uint8_t *end, char **string) {
+    if (ptr + 1 > end) ERROR("Response is too short");
+    uint8_t length = *(ptr++);
+    if (ptr + length > end) ERROR("Response is too short");
+
+    *string = malloc((length + 1) * sizeof(**string));
+    if (*string == NULL) OUT_OF_MEMORY();
+    (*string)[length] = '\0';
+
+    memcpy(*string, ptr, length);
+    ptr += length;
+
+    return ptr;
+}
+
 // Copies the data (excluding first length byte) into buffer and replaces each
 // length byte with '\0' to transform it into array of null-terminated strings.
 // TXT's data is a dynamic array of strings pointing to the buffer.
@@ -107,8 +122,10 @@ uint16_t str_to_qtype(const char *str) {
     if (strcasecmp(str, "NS") == 0) return TYPE_NS;
     if (strcasecmp(str, "CNAME") == 0) return TYPE_CNAME;
     if (strcasecmp(str, "SOA") == 0) return TYPE_SOA;
+    if (strcasecmp(str, "HINFO") == 0) return TYPE_HINFO;
     if (strcasecmp(str, "TXT") == 0) return TYPE_TXT;
     if (strcasecmp(str, "AAAA") == 0) return TYPE_AAAA;
+    if (strcasecmp(str, "ANY") == 0) return QTYPE_ANY;
     ERROR("Invalid or unsupported qtype \"%s\"", str);
 }
 
@@ -118,6 +135,7 @@ const char *type_to_str(uint16_t type) {
         case TYPE_NS:    return "NS";
         case TYPE_CNAME: return "CNAME";
         case TYPE_SOA:   return "SOA";
+        case TYPE_HINFO: return "HINFO";
         case TYPE_TXT:   return "TXT";
         case TYPE_AAAA:  return "AAAA";
         default:         ERROR("Invalid or unsupported resource record type %u", type);
@@ -138,6 +156,7 @@ void print_rr(ResourceRecord *rr) {
             printf("%s %s %u %u %u %u %u", rr->data.soa.mname, rr->data.soa.rname, rr->data.soa.serial,
                    rr->data.soa.refresh, rr->data.soa.retry, rr->data.soa.expire, rr->data.soa.min_ttl);
             break;
+        case TYPE_HINFO: printf("%s %s", rr->data.hinfo.cpu, rr->data.hinfo.os); break;
         case TYPE_TXT:
             for (uint32_t i = 0; i < rr->data.txt.length; i++) printf(" \"%s\"", rr->data.txt.data[i]);
             break;
@@ -292,6 +311,10 @@ const uint8_t *read_resource_record(const uint8_t *response, const uint8_t *ptr,
             ptr += sizeof(min_ttl);
             rr->data.soa.min_ttl = ntohl(min_ttl);
         } break;
+        case TYPE_HINFO:
+            ptr = read_char_string(ptr, end, &rr->data.hinfo.cpu);
+            ptr = read_char_string(ptr, end, &rr->data.hinfo.os);
+            break;
         case TYPE_TXT:
             rr->data.txt.length = 0;
             ptr = read_txt(ptr, rr->data_length, &rr->data.txt);

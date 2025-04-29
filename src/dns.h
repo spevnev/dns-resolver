@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include "vector.h"
 
 #define DNS_PORT 53
 
@@ -14,8 +15,11 @@
 #define TYPE_NS 2
 #define TYPE_CNAME 5
 #define TYPE_SOA 6
+#define TYPE_HINFO 13
 #define TYPE_TXT 16
 #define TYPE_AAAA 28
+
+#define QTYPE_ANY 255
 
 #define CLASS_IN 1
 
@@ -70,6 +74,10 @@ typedef struct {
             uint32_t expire;
             uint32_t min_ttl;
         } soa;
+        struct {
+            char *cpu;
+            char *os;
+        } hinfo;
         TXT txt;
         struct in6_addr ip6_address;
     } data;

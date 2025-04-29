@@ -192,6 +192,9 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
 
         // Read resource records.
         if (res_header.answer_count > 0) {
+            // If qtype is ANY, terminate search after any response with answers section.
+            if (qtype == QTYPE_ANY) found = true;
+
             RRVec prev_rrs = {0};
             printf("Answer section:\n");
             for (uint16_t i = 0; i < res_header.answer_count; i++) {
@@ -203,7 +206,7 @@ void resolve(const char *domain, const char *nameserver_ip, uint16_t port, uint1
                     continue;
                 }
 
-                if (rr.type == qtype) {
+                if (rr.type == qtype || qtype == QTYPE_ANY) {
                     // RR has matching domain and type. Set `found` and print the rest of the response.
                     found = true;
                 } else if (rr.type == TYPE_CNAME) {
