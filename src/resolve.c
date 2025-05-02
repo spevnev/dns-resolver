@@ -1,7 +1,9 @@
+#define _POSIX_C_SOURCE 200809L
 #include "resolve.h"
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdbool.h>
@@ -20,11 +22,7 @@
 
 VECTOR_TYPEDEF(IPVec, in_addr_t);
 
-// https://www.iana.org/domains/root/servers
-static const char *ROOT_NAMESERVER_IPS[] = {
-    "198.41.0.4",    "170.247.170.2", "192.33.4.12",   "199.7.91.13",  "192.203.230.10", "192.5.5.241",  "192.112.36.4",
-    "198.97.190.53", "192.36.148.17", "192.58.128.30", "193.0.14.129", "199.7.83.42",    "202.12.27.33",
-};
+#define RESOLV_CONF_PATH "/etc/resolv.conf"
 
 static bool address_equals(struct sockaddr_in a, struct sockaddr_in b) {
     return a.sin_port == b.sin_port && a.sin_addr.s_addr == b.sin_addr.s_addr;
@@ -36,11 +34,48 @@ static void add_ns(IPVec *servers, const char *ip_str) {
     VECTOR_PUSH(servers, ip);
 }
 
-static void add_root_servers(IPVec *servers) {
-    // TODO: randomize order of servers?
-    for (uint32_t i = 0; i < sizeof(ROOT_NAMESERVER_IPS) / sizeof(*ROOT_NAMESERVER_IPS); i++) {
-        add_ns(servers, ROOT_NAMESERVER_IPS[i]);
+static bool is_whitespace(char ch) { return ch == ' ' || ch == '\t'; }
+
+static void load_resolve_config(IPVec *servers, bool trace) {
+    FILE *fp = fopen(RESOLV_CONF_PATH, "r");
+    if (fp == NULL) ERROR("Failed to open %s", RESOLV_CONF_PATH);
+
+    bool found = false;
+    char *line = NULL;
+    size_t line_size = 0;
+    ssize_t line_len;
+    in_addr_t ip4_addr;
+    struct in6_addr ip6_addr;
+    while ((line_len = getline(&line, &line_size, fp)) != -1) {
+        char *ch = line;
+        while (is_whitespace(*ch)) ch++;
+
+        if (strncmp(ch, "nameserver", strlen("nameserver")) != 0) continue;
+        ch += strlen("nameserver");
+
+        // Find the beginning of the address.
+        while (is_whitespace(*ch)) ch++;
+        char *addr_str = ch;
+
+        // Go to the end of the address and put null terminator.
+        while (*ch != '\n' && !is_whitespace(*ch)) ch++;
+        *ch = '\0';
+
+        if (inet_pton(AF_INET, addr_str, &ip4_addr) == 1) {
+            found = true;
+            VECTOR_PUSH(servers, ip4_addr);
+        } else if (inet_pton(AF_INET6, addr_str, &ip6_addr) == 1) {
+            if (trace) printf("IPv6 is not supported.\n");
+        } else {
+            ERROR("Invalid nameserver address in %s", RESOLV_CONF_PATH);
+        }
     }
+    if (!feof(fp)) ERROR("Failed to read %s: %s", RESOLV_CONF_PATH, strerror(errno));
+    free(line);
+    fclose(fp);
+
+    // If no nameserver entries are present, the default is to use the local nameserver.
+    if (!found) add_ns(servers, "127.0.0.1");
 }
 
 static bool check_rrs(RRVec *results, RRVec rrs, char *sname, uint16_t qtype) {
@@ -84,8 +119,11 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
 
     // Create list of nameservers.
     IPVec servers = {0};
-    add_root_servers(&servers);
-    if (nameserver_ip != NULL) add_ns(&servers, nameserver_ip);
+    if (nameserver_ip != NULL) {
+        add_ns(&servers, nameserver_ip);
+    } else {
+        load_resolve_config(&servers, true);
+    }
 
     // Set initial search name.
     char sname[MAX_DOMAIN_LENGTH + 1];
@@ -252,7 +290,6 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
                 print_rr(&rr);
 
                 if (rr.type != TYPE_A) continue;
-
                 for (uint32_t j = 0; j < authority_domains.length; j++) {
                     if (strcasecmp(authority_domains.data[j], rr.domain) == 0) {
                         VECTOR_PUSH(&servers, rr.data.ip4_address);
@@ -264,6 +301,7 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
                     }
                 }
             }
+
             switch (extended_rcode) {
                 case RCODE_SUCCESS: break;
                 case RCODE_BAD_VERSION:
@@ -273,6 +311,7 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
                 default: ERROR("Invalid or unsupported response code %d", extended_rcode);
             }
         }
+
         for (uint32_t i = 0; i < authority_domains.length; i++) {
             RRVec ns_addr = resolve(authority_domains.data[i], TYPE_A, NULL, DNS_PORT, timeout_sec, 0);
             for (uint32_t j = 0; j < ns_addr.length; j++) {
