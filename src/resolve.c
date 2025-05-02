@@ -126,7 +126,7 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
     }
 
     // Set initial search name.
-    char sname[MAX_DOMAIN_LENGTH + 1];
+    char sname[DOMAIN_BUFFER_SIZE];
     size_t domain_len = strlen(domain);
 
     // Remove trailing dot.
@@ -159,9 +159,14 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
         printf("Resolving %s using %s.\n", sname, addr_buffer);
 
         // Send request.
-        uint16_t id;
-        ssize_t req_len = write_request(buffer, flags & RESOLVE_RECURSION_DESIRED, sname, qtype, &id, buffer_size);
-        if (sendto(fd, buffer, req_len, 0, (struct sockaddr *) &req_addr, sizeof(req_addr)) != req_len) {
+        Request request = {
+            .buffer = buffer,
+            .size = buffer_size,
+            .length = 0,
+        };
+        uint16_t id = write_request(&request, flags & RESOLVE_RECURSION_DESIRED, sname, qtype, buffer_size);
+        if (sendto(fd, request.buffer, request.length, 0, (struct sockaddr *) &req_addr, sizeof(req_addr))
+            != request.length) {
             if (errno == EAGAIN) {  // timeout
                 // Try other nameserver.
                 fprintf(stderr, "Request timeout.\n");
@@ -195,12 +200,14 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
         }
 
         // Reuse request buffer for response.
-        const uint8_t *ptr = buffer;
-        const uint8_t *buffer_end = buffer + res_len;
+        Response response = {
+            .buffer = buffer,
+            .current = 0,
+            .length = res_len,
+        };
 
         // Read response header.
-        DNSHeader res_header;
-        ptr = read_response_header(ptr, buffer_end, &res_header, id);
+        DNSHeader res_header = read_response_header(&response, id);
         if (res_header.is_truncated) ERROR("Response is truncated");
 
         // Check response code.
@@ -229,7 +236,7 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
         if (found) break;
 
         // Validate response question.
-        ptr = validate_question(buffer, ptr, buffer_end, qtype, sname);
+        validate_question(&response, qtype, sname);
 
         // Read resource records.
         if (res_header.answer_count > 0) {
@@ -239,8 +246,8 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
             RRVec prev_rrs = {0};
             printf("Answer section:\n");
             for (uint16_t i = 0; i < res_header.answer_count; i++) {
-                ptr = read_resource_record(buffer, ptr, buffer_end, &rr);
-                print_rr(&rr);
+                read_resource_record(&response, &rr);
+                print_resource_record(&rr);
 
                 if (strcasecmp(rr.domain, sname) != 0) {
                     VECTOR_PUSH(&prev_rrs, rr);
@@ -265,10 +272,11 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
         if (res_header.authority_count > 0) {
             printf("Authority section:\n");
             for (uint16_t i = 0; i < res_header.authority_count; i++) {
-                ptr = read_resource_record(buffer, ptr, buffer_end, &rr);
-                print_rr(&rr);
+                read_resource_record(&response, &rr);
+                print_resource_record(&rr);
+
                 if (rr.type == TYPE_NS) {
-                    char *domain = malloc((MAX_DOMAIN_LENGTH + 1) * sizeof(*domain));
+                    char *domain = malloc(DOMAIN_BUFFER_SIZE * sizeof(*domain));
                     if (domain == NULL) OUT_OF_MEMORY();
                     memcpy(domain, rr.data.domain, strlen(rr.data.domain) + 1);
                     VECTOR_PUSH(&authority_domains, domain);
@@ -281,13 +289,13 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
 
             printf("Additional section:\n");
             for (uint16_t i = 0; i < res_header.additional_count; i++) {
-                ptr = read_resource_record(buffer, ptr, buffer_end, &rr);
+                read_resource_record(&response, &rr);
                 if (rr.type == TYPE_OPT) {
                     extended_rcode = (((uint16_t) rr.data.opt.extended_rcode) << 4) | res_header.response_code;
                     continue;
                 }
 
-                print_rr(&rr);
+                print_resource_record(&rr);
 
                 if (rr.type != TYPE_A) continue;
                 for (uint32_t j = 0; j < authority_domains.length; j++) {
@@ -313,10 +321,9 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
         }
 
         for (uint32_t i = 0; i < authority_domains.length; i++) {
-            RRVec ns_addr = resolve(authority_domains.data[i], TYPE_A, NULL, DNS_PORT, timeout_sec, 0);
-            for (uint32_t j = 0; j < ns_addr.length; j++) {
-                VECTOR_PUSH(&servers, ns_addr.data[j].data.ip4_address);
-            }
+            RRVec ns_addr = resolve(authority_domains.data[i], TYPE_A, nameserver_ip, port, timeout_sec,
+                                    RESOLVE_RECURSION_DESIRED);
+            for (uint32_t j = 0; j < ns_addr.length; j++) VECTOR_PUSH(&servers, ns_addr.data[j].data.ip4_address);
         }
         VECTOR_FREE(&authority_domains);
 

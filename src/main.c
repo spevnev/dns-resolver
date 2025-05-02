@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
             printf("No answer.\n");
         } else {
             printf("Answer:\n");
-            for (uint32_t i = 0; i < results.length; i++) print_rr(&results.data[i]);
+            for (uint32_t i = 0; i < results.length; i++) print_resource_record(&results.data[i]);
         }
     }
 

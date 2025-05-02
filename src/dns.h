@@ -9,9 +9,16 @@
 #define DNS_PORT 53
 
 #define MAX_DOMAIN_LENGTH 255
+#define DOMAIN_BUFFER_SIZE (MAX_DOMAIN_LENGTH + 1)
 
+// Max payload size when using UDP without EDNS (RFC1035).
 #define MAX_UDP_PAYLOAD_SIZE 512
+// Recommended request payload size when using UDP with EDNS (RFC6891).
 #define EDNS_UDP_PAYLOAD_SIZE 1280
+
+#define CLASS_IN 1
+
+#define OPCODE_QUERY 0
 
 #define TYPE_A 1
 #define TYPE_NS 2
@@ -23,10 +30,6 @@
 #define TYPE_OPT 41
 
 #define QTYPE_ANY 255
-
-#define CLASS_IN 1
-
-#define OPCODE_QUERY 0
 
 #define RCODE_SUCCESS 0
 #define RCODE_FORMAT_ERROR 1
@@ -72,16 +75,16 @@ typedef struct {
 } OPTTTLFields;
 
 typedef struct {
-    char domain[MAX_DOMAIN_LENGTH + 1];
+    char domain[DOMAIN_BUFFER_SIZE];
     uint16_t type;
     uint32_t ttl;
     uint16_t data_length;
     union {
         in_addr_t ip4_address;
-        char domain[MAX_DOMAIN_LENGTH + 1];
+        char domain[DOMAIN_BUFFER_SIZE];
         struct {
-            char mname[MAX_DOMAIN_LENGTH + 1];
-            char rname[MAX_DOMAIN_LENGTH + 1];
+            char mname[DOMAIN_BUFFER_SIZE];
+            char rname[DOMAIN_BUFFER_SIZE];
             uint32_t serial;
             uint32_t refresh;
             uint32_t retry;
@@ -102,17 +105,28 @@ typedef struct {
 
 VECTOR_TYPEDEF(RRVec, ResourceRecord);
 
+typedef struct {
+    uint8_t *buffer;
+    uint32_t size;
+    uint32_t length;
+} Request;
+
+typedef struct {
+    const uint8_t *buffer;
+    uint32_t length;
+    uint32_t current;
+} Response;
+
 uint16_t str_to_qtype(const char *str);
 const char *type_to_str(uint16_t type);
 
-void print_rr(ResourceRecord *rr);
+void print_resource_record(ResourceRecord *rr);
 
-ssize_t write_request(uint8_t *buffer, bool recursion_desired, const char *domain, uint16_t qtype, uint16_t *id,
-                      uint16_t udp_payload_size);
+uint16_t write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype,
+                       uint16_t udp_payload_size);
 
-const uint8_t *read_response_header(const uint8_t *ptr, const uint8_t *end, DNSHeader *header, uint16_t req_id);
-const uint8_t *validate_question(const uint8_t *message, const uint8_t *ptr, const uint8_t *end, uint16_t req_qtype,
-                                 const char *req_domain);
-const uint8_t *read_resource_record(const uint8_t *message, const uint8_t *ptr, const uint8_t *end, ResourceRecord *rr);
+DNSHeader read_response_header(Response *response, uint16_t req_id);
+void validate_question(Response *response, uint16_t req_qtype, const char *req_domain);
+void read_resource_record(Response *response, ResourceRecord *rr);
 
 #endif  // DNS_H
