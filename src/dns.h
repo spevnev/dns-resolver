@@ -12,7 +12,7 @@
 #define DOMAIN_BUFFER_SIZE (MAX_DOMAIN_LENGTH + 1)
 
 // Max payload size when using UDP without EDNS (RFC1035).
-#define MAX_UDP_PAYLOAD_SIZE 512
+#define STANDARD_UDP_PAYLOAD_SIZE 512
 // Recommended request payload size when using UDP with EDNS (RFC6891).
 #define EDNS_UDP_PAYLOAD_SIZE 1280
 
@@ -98,6 +98,7 @@ typedef struct {
         TXT txt;
         struct in6_addr ip6_address;
         struct {
+            uint16_t udp_payload_size;
             uint8_t extended_rcode;
         } opt;
     } data;
@@ -123,7 +124,7 @@ const char *type_to_str(uint16_t type);
 void print_resource_record(ResourceRecord *rr);
 
 uint16_t write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype,
-                       uint16_t udp_payload_size);
+                       uint16_t udp_payload_size, bool enable_edns);
 
 DNSHeader read_response_header(Response *response, uint16_t req_id);
 void validate_question(Response *response, uint16_t req_qtype, const char *req_domain);

@@ -11,6 +11,8 @@
 #include "error.h"
 #include "vector.h"
 
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+
 static const uint8_t LABEL_DATA_MASK = 63;      // 00111111
 static const uint8_t LABEL_TYPE_MASK = 192;     // 11000000
 static const uint8_t LABEL_TYPE_POINTER = 192;  // 11000000
@@ -36,6 +38,12 @@ static void write_u32(Request *request, uint32_t value) {
 }
 
 static void write_domain(Request *request, const char *domain) {
+    // Check root domain.
+    if (domain[0] == '\0') {
+        write_u8(request, 0);
+        return;
+    }
+
     const char *start = domain;
     const char *ch = domain;
     for (;;) {
@@ -215,7 +223,7 @@ void print_resource_record(ResourceRecord *rr) {
 }
 
 uint16_t write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype,
-                       uint16_t udp_payload_size) {
+                       uint16_t udp_payload_size, bool enable_edns) {
     uint16_t id;
     if (getrandom(&id, sizeof(id), 0) != sizeof(id)) PERROR("getrandom");
 
@@ -234,7 +242,7 @@ uint16_t write_request(Request *request, bool recursion_desired, const char *dom
         .question_count = htons(1),
         .answer_count = 0,
         .authority_count = 0,
-        .additional_count = htons(1),
+        .additional_count = enable_edns ? htons(1) : 0,
     };
     if (request->length + sizeof(header) > request->size) ERROR("Request buffer is too small");
     memcpy(request->buffer + request->length, &header, sizeof(header));
@@ -246,26 +254,28 @@ uint16_t write_request(Request *request, bool recursion_desired, const char *dom
     write_u16(request, CLASS_IN);
 
     // Write the OPT pseudo-RR (RFC6891):
-    // Domain must be root.
-    write_u8(request, 0);
-    write_u16(request, TYPE_OPT);
-    // CLASS contains max UDP payload size.
-    write_u16(request, udp_payload_size);
+    if (enable_edns) {
+        // Domain must be root.
+        write_u8(request, 0);
+        write_u16(request, TYPE_OPT);
+        // CLASS contains max UDP payload size.
+        write_u16(request, MAX(udp_payload_size, STANDARD_UDP_PAYLOAD_SIZE));
 
-    // TTL contains additional OPT fields.
-    OPTTTLFields opt_fields = {
-        .extended_rcode = 0,
-        .version = EDNS_VERSION,
-        ._reserved = 0,
-        .dnssec_ok = 0,
-        ._reserved2 = 0,
-    };
-    if (request->length + sizeof(opt_fields) > request->size) ERROR("Request buffer is too small");
-    memcpy(request->buffer + request->length, &opt_fields, sizeof(opt_fields));
-    request->length += sizeof(opt_fields);
+        // TTL contains additional OPT fields.
+        OPTTTLFields opt_fields = {
+            .extended_rcode = 0,
+            .version = EDNS_VERSION,
+            ._reserved = 0,
+            .dnssec_ok = 0,
+            ._reserved2 = 0,
+        };
+        if (request->length + sizeof(opt_fields) > request->size) ERROR("Request buffer is too small");
+        memcpy(request->buffer + request->length, &opt_fields, sizeof(opt_fields));
+        request->length += sizeof(opt_fields);
 
-    // No additional options.
-    write_u16(request, 0);
+        // No additional options.
+        write_u16(request, 0);
+    }
 
     return id;
 }
@@ -350,6 +360,8 @@ void read_resource_record(Response *response, ResourceRecord *rr) {
             break;
         case TYPE_OPT: {
             if (rr->domain[0] != 0) ERROR("OPT domain must be root");
+
+            rr->data.opt.udp_payload_size = MAX(class, STANDARD_UDP_PAYLOAD_SIZE);
 
             OPTTTLFields opt_fields;
             memcpy(&opt_fields, &net_ttl, sizeof(opt_fields));

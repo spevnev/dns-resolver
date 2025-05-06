@@ -108,6 +108,10 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
               uint32_t flags) {
     assert(domain != NULL && timeout_sec > 0);
 
+    bool recursion_desired = flags & RESOLVE_RECURSION_DESIRED;
+    bool enable_edns = flags & RESOLVE_EDNS;
+    bool trace = flags & RESOLVE_TRACE;
+
     // Open IPv4 UDP socket.
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd == -1) PERROR("socket");
@@ -128,12 +132,8 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
     // Set initial search name.
     char sname[DOMAIN_BUFFER_SIZE];
     size_t domain_len = strlen(domain);
-
     // Remove trailing dot.
     if (domain[domain_len - 1] == '.') domain_len--;
-
-    // Check length.
-    if (domain_len == 0) ERROR("Domain name is empty");
     if (domain_len > MAX_DOMAIN_LENGTH) ERROR("Invalid domain name, maximum length is %d", MAX_DOMAIN_LENGTH);
 
     memcpy(sname, domain, domain_len);
@@ -156,7 +156,7 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
 
         char addr_buffer[INET_ADDRSTRLEN];
         if (inet_ntop(AF_INET, &server_ip, addr_buffer, sizeof(addr_buffer)) == NULL) PERROR("inet_ntop");
-        printf("Resolving %s using %s.\n", sname, addr_buffer);
+        if (trace) printf("Resolving %s using %s.\n", sname, addr_buffer);
 
         // Send request.
         Request request = {
@@ -164,12 +164,12 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
             .size = buffer_size,
             .length = 0,
         };
-        uint16_t id = write_request(&request, flags & RESOLVE_RECURSION_DESIRED, sname, qtype, buffer_size);
+        uint16_t id = write_request(&request, recursion_desired, sname, qtype, buffer_size, enable_edns);
         if (sendto(fd, request.buffer, request.length, 0, (struct sockaddr *) &req_addr, sizeof(req_addr))
             != request.length) {
-            if (errno == EAGAIN) {  // timeout
+            if (errno == EAGAIN) {
                 // Try other nameserver.
-                fprintf(stderr, "Request timeout.\n");
+                if (trace) fprintf(stderr, "Request timeout.\n");
                 continue;
             } else {
                 PERROR("sendto");
@@ -177,25 +177,26 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
         }
 
         // Read responses until we find one from the same address and port as in request.
-        struct sockaddr_in res_addr;
-        socklen_t res_addr_len;
-        ssize_t res_len;
-        bool retry = false;
+        struct sockaddr_in response_address;
+        socklen_t response_address_length;
+        ssize_t response_length;
+        bool timed_out = false;
         do {
-            res_addr_len = sizeof(res_addr);
-            res_len = recvfrom(fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &res_addr, &res_addr_len);
-            if (res_len == -1) {
-                if (errno == EAGAIN) {  // timeout
-                    retry = true;
+            response_address_length = sizeof(response_address);
+            response_length = recvfrom(fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &response_address,
+                                       &response_address_length);
+            if (response_length == -1) {
+                if (errno == EAGAIN) {
+                    timed_out = true;
                     break;
                 } else {
                     PERROR("recvfrom");
                 }
             }
-        } while (res_addr_len != sizeof(res_addr) || !address_equals(req_addr, res_addr));
-        if (retry) {
+        } while (response_address_length != sizeof(response_address) || !address_equals(req_addr, response_address));
+        if (timed_out) {
             // Try other nameserver.
-            fprintf(stderr, "Request timeout.\n");
+            if (trace) fprintf(stderr, "Request timeout.\n");
             continue;
         }
 
@@ -203,7 +204,7 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
         Response response = {
             .buffer = buffer,
             .current = 0,
-            .length = res_len,
+            .length = response_length,
         };
 
         // Read response header.
@@ -221,15 +222,15 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
             case RCODE_FORMAT_ERROR: ERROR("Format error");
             case RCODE_SERVER_ERROR:
                 // Try other nameserver.
-                fprintf(stderr, "Nameserver error.\n");
+                if (trace) fprintf(stderr, "Nameserver error.\n");
                 continue;
             case RCODE_NOT_IMPLEMENTED:
                 // Try other nameserver.
-                fprintf(stderr, "Nameserver does not support this type of query.\n");
+                if (trace) fprintf(stderr, "Nameserver does not support this type of query.\n");
                 continue;
             case RCODE_REFUSED:
                 // Try other nameserver.
-                fprintf(stderr, "Nameserver refused to answer.\n");
+                if (trace) fprintf(stderr, "Nameserver refused to answer.\n");
                 continue;
             default: ERROR("Invalid or unsupported response code %d", res_header.response_code);
         }
@@ -244,10 +245,10 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
             if (qtype == QTYPE_ANY) found = true;
 
             RRVec prev_rrs = {0};
-            printf("Answer section:\n");
+            if (trace) printf("Answer section:\n");
             for (uint16_t i = 0; i < res_header.answer_count; i++) {
                 read_resource_record(&response, &rr);
-                print_resource_record(&rr);
+                if (trace) print_resource_record(&rr);
 
                 if (strcasecmp(rr.domain, sname) != 0) {
                     VECTOR_PUSH(&prev_rrs, rr);
@@ -270,10 +271,10 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
 
         CstrVec authority_domains = {0};
         if (res_header.authority_count > 0) {
-            printf("Authority section:\n");
+            if (trace) printf("Authority section:\n");
             for (uint16_t i = 0; i < res_header.authority_count; i++) {
                 read_resource_record(&response, &rr);
-                print_resource_record(&rr);
+                if (trace) print_resource_record(&rr);
 
                 if (rr.type == TYPE_NS) {
                     char *domain = malloc(DOMAIN_BUFFER_SIZE * sizeof(*domain));
@@ -285,17 +286,24 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
         }
 
         if (res_header.additional_count > 0) {
-            uint16_t extended_rcode = 0;
-
-            printf("Additional section:\n");
+            bool contains_opt = false;
+            bool printed_section = false;
+            uint16_t extended_response_code = 0;
             for (uint16_t i = 0; i < res_header.additional_count; i++) {
                 read_resource_record(&response, &rr);
                 if (rr.type == TYPE_OPT) {
-                    extended_rcode = (((uint16_t) rr.data.opt.extended_rcode) << 4) | res_header.response_code;
+                    contains_opt = true;
+                    extended_response_code = (((uint16_t) rr.data.opt.extended_rcode) << 4) | res_header.response_code;
                     continue;
                 }
 
-                print_resource_record(&rr);
+                if (trace) {
+                    if (!printed_section) {
+                        printed_section = true;
+                        printf("Additional section:\n");
+                    }
+                    print_resource_record(&rr);
+                }
 
                 if (rr.type != TYPE_A) continue;
                 for (uint32_t j = 0; j < authority_domains.length; j++) {
@@ -309,27 +317,31 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
                     }
                 }
             }
+            if (!enable_edns && contains_opt) ERROR("Nameserver sent OPT although EDNS is disabled");
+            if (enable_edns && !contains_opt) {
+                // Try other nameserver.
+                if (trace) fprintf(stderr, "Nameserver does not support EDNS.\n");
+                continue;
+            }
 
-            switch (extended_rcode) {
+            switch (extended_response_code) {
                 case RCODE_SUCCESS: break;
                 case RCODE_BAD_VERSION:
                     // Try other nameserver.
-                    fprintf(stderr, "Nameserver does not support EDNS version %d.\n", EDNS_VERSION);
+                    if (trace) fprintf(stderr, "Nameserver does not support EDNS version %d.\n", EDNS_VERSION);
                     continue;
-                default: ERROR("Invalid or unsupported response code %d", extended_rcode);
+                default: ERROR("Invalid or unsupported response code %d", extended_response_code);
             }
         }
+        if (trace) printf("\n");
 
         for (uint32_t i = 0; i < authority_domains.length; i++) {
-            RRVec ns_addr = resolve(authority_domains.data[i], TYPE_A, nameserver_ip, port, timeout_sec,
-                                    RESOLVE_RECURSION_DESIRED);
+            RRVec ns_addr = resolve(authority_domains.data[i], TYPE_A, nameserver_ip, port, timeout_sec, flags);
             for (uint32_t j = 0; j < ns_addr.length; j++) VECTOR_PUSH(&servers, ns_addr.data[j].data.ip4_address);
         }
         VECTOR_FREE(&authority_domains);
-
-        printf("\n");
     }
-    if (!found) printf("Cannot resolve domain.\n");
+    if (!found) printf("Failed to resolve the domain.\n");
 
     VECTOR_FREE(&servers);
     close(fd);
