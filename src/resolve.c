@@ -130,10 +130,11 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
     }
 
     // Set initial search name.
-    char sname[DOMAIN_BUFFER_SIZE];
+    char sname[DOMAIN_SIZE];
     size_t domain_len = strlen(domain);
     // Remove trailing dot.
     if (domain[domain_len - 1] == '.') domain_len--;
+    if (domain_len > 0 && domain[domain_len - 1] == '.') ERROR("Invalid domain name, multiple trailing dots");
     if (domain_len > MAX_DOMAIN_LENGTH) ERROR("Invalid domain name, maximum length is %d", MAX_DOMAIN_LENGTH);
 
     memcpy(sname, domain, domain_len);
@@ -277,7 +278,7 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
                 if (trace) print_resource_record(&rr);
 
                 if (rr.type == TYPE_NS) {
-                    char *domain = malloc(DOMAIN_BUFFER_SIZE * sizeof(*domain));
+                    char *domain = malloc(DOMAIN_SIZE * sizeof(*domain));
                     if (domain == NULL) OUT_OF_MEMORY();
                     memcpy(domain, rr.data.domain, strlen(rr.data.domain) + 1);
                     VECTOR_PUSH(&authority_domains, domain);

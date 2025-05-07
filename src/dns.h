@@ -9,7 +9,7 @@
 #define DNS_PORT 53
 
 #define MAX_DOMAIN_LENGTH 255
-#define DOMAIN_BUFFER_SIZE (MAX_DOMAIN_LENGTH + 1)
+#define DOMAIN_SIZE (MAX_DOMAIN_LENGTH + 1)
 
 // Max payload size when using UDP without EDNS (RFC1035).
 #define STANDARD_UDP_PAYLOAD_SIZE 512
@@ -75,16 +75,16 @@ typedef struct {
 } OPTTTLFields;
 
 typedef struct {
-    char domain[DOMAIN_BUFFER_SIZE];
+    char domain[DOMAIN_SIZE];
     uint16_t type;
     uint32_t ttl;
     uint16_t data_length;
     union {
         in_addr_t ip4_address;
-        char domain[DOMAIN_BUFFER_SIZE];
+        char domain[DOMAIN_SIZE];
         struct {
-            char mname[DOMAIN_BUFFER_SIZE];
-            char rname[DOMAIN_BUFFER_SIZE];
+            char mname[DOMAIN_SIZE];
+            char rname[DOMAIN_SIZE];
             uint32_t serial;
             uint32_t refresh;
             uint32_t retry;

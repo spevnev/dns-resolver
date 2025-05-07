@@ -84,7 +84,7 @@ static uint32_t read_u32(Response *response) {
     return ntohl(value);
 }
 
-static void read_domain(Response *response, char *domain) {
+static void read_domain_rec(Response *response, char *domain, int domain_size) {
     // Check root domain.
     if (response->buffer[response->current] == 0) {
         *domain = '\0';
@@ -107,6 +107,8 @@ static void read_domain(Response *response, char *domain) {
                 break;
             }
             if (response->current + label_len > response->length) ERROR("Response is too short");
+            if (label_len + 1 > domain_size) ERROR("Domain is too long");
+            domain_size -= label_len + 1;
 
             memcpy(domain_ptr, response->buffer + response->current, label_len);
             response->current += label_len;
@@ -119,13 +121,17 @@ static void read_domain(Response *response, char *domain) {
                 .current = offset,
                 .length = response->length,
             };
-            read_domain(&ptr_response, domain_ptr);
+            read_domain_rec(&ptr_response, domain_ptr, domain_size);
             // Pointer is always the last part of domain.
             break;
         } else {
             ERROR("Invalid label length type");
         }
     }
+}
+
+static void read_domain(Response *response, char domain[static DOMAIN_SIZE]) {
+    read_domain_rec(response, domain, DOMAIN_SIZE);
 }
 
 static char *read_char_string(Response *response) {
@@ -302,7 +308,7 @@ DNSHeader read_response_header(Response *response, uint16_t req_id) {
 }
 
 void validate_question(Response *response, uint16_t req_qtype, const char *req_domain) {
-    char domain[DOMAIN_BUFFER_SIZE];
+    char domain[DOMAIN_SIZE];
     read_domain(response, domain);
     if (strcasecmp(domain, req_domain) != 0) ERROR("Invalid domain in response");
 

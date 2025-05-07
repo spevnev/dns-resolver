@@ -1,6 +1,6 @@
 CC := gcc
 
-CFLAGS  := -O2 -std=c17 -Wall -Wextra -pedantic -Isrc -MMD -MP
+CFLAGS  := -O2 -std=c99 -Wall -Wextra -pedantic -Isrc -MMD -MP
 LDFLAGS :=
 
 ifeq ($(DEBUG), 1)
