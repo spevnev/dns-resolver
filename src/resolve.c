@@ -165,7 +165,7 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
             .size = buffer_size,
             .length = 0,
         };
-        uint16_t id = write_request(&request, recursion_desired, sname, qtype, buffer_size, enable_edns);
+        uint16_t id = write_request(&request, recursion_desired, sname, qtype, enable_edns, buffer_size);
         if (sendto(fd, request.buffer, request.length, 0, (struct sockaddr *) &req_addr, sizeof(req_addr))
             != request.length) {
             if (errno == EAGAIN) {

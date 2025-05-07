@@ -228,8 +228,8 @@ void print_resource_record(ResourceRecord *rr) {
     printf("\n");
 }
 
-uint16_t write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype,
-                       uint16_t udp_payload_size, bool enable_edns) {
+uint16_t write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
+                       uint16_t udp_payload_size) {
     uint16_t id;
     if (getrandom(&id, sizeof(id), 0) != sizeof(id)) PERROR("getrandom");
 
@@ -323,19 +323,17 @@ void read_resource_record(Response *response, ResourceRecord *rr) {
     read_domain(response, rr->domain);
 
     rr->type = read_u16(response);
-
-    // Class must be Internet, or it is OPT RR whose CLASS contains UDP payload size (RFC6891).
     uint16_t class = read_u16(response);
-    if (rr->type != TYPE_OPT && class != CLASS_IN) ERROR("Resource record class is not Internet");
-
-    uint32_t net_ttl;
-    if (response->current + sizeof(net_ttl) > response->length) ERROR("Response is too short");
-    memcpy(&net_ttl, response->buffer + response->current, sizeof(net_ttl));
-    rr->ttl = ntohl(net_ttl);
-    response->current += sizeof(net_ttl);
-
+    rr->ttl = read_u32(response);
     rr->data_length = read_u16(response);
     if (response->current + rr->data_length > response->length) ERROR("Response is too short");
+
+    if (rr->type != TYPE_OPT) {
+        // Class must be Internet, or it is OPT RR whose CLASS contains UDP payload size (RFC6891).
+        if (class != CLASS_IN) ERROR("Resource record class is not Internet");
+        // TTL is between 0 and 2147483647 (RFC2181).
+        if (rr->ttl > 2147483647) rr->ttl = 0;
+    }
 
     switch (rr->type) {
         case TYPE_A:
@@ -369,6 +367,7 @@ void read_resource_record(Response *response, ResourceRecord *rr) {
 
             rr->data.opt.udp_payload_size = MAX(class, STANDARD_UDP_PAYLOAD_SIZE);
 
+            uint32_t net_ttl = htonl(rr->ttl);
             OPTTTLFields opt_fields;
             memcpy(&opt_fields, &net_ttl, sizeof(opt_fields));
 

@@ -123,8 +123,8 @@ const char *type_to_str(uint16_t type);
 
 void print_resource_record(ResourceRecord *rr);
 
-uint16_t write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype,
-                       uint16_t udp_payload_size, bool enable_edns);
+uint16_t write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
+                       uint16_t udp_payload_size);
 
 DNSHeader read_response_header(Response *response, uint16_t req_id);
 void validate_question(Response *response, uint16_t req_qtype, const char *req_domain);
