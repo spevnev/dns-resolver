@@ -178,6 +178,16 @@ char *parse_args(int argc, char **argv) {
             for (uint32_t i = 0; i < options.length; i++) {
                 Option *option = &options.data[i];
                 size_t name_len = strlen(option->name);
+
+                // --no-opt
+                if (option->type == TYPE_BOOL && arg_name_len > 3 && strncmp(arg_name, "no-", 3) == 0
+                    && strcmp(arg_name + 3, option->name) == 0) {
+                    option->value.bool_ = false;
+                    found = true;
+                    break;
+                }
+
+                // Argument does not match option name.
                 if (arg_name_len < name_len || strncmp(arg_name, option->name, name_len) != 0) continue;
 
                 // --opt=v
