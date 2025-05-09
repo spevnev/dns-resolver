@@ -25,11 +25,13 @@ int main(int argc, char **argv) {
     const char **nameserver_ip = option_str('s', "server", "specify nameserver IP address", false, NULL);
     long *port = option_long('p', "port", "specify nameserver port", true, DNS_PORT);
     const char **qtype_str = option_str('t', "type", "specify query type", true, "A");
-    long *timeout_sec = option_long('T', "timeout", "timeout in seconds", true, 10);
+    long *timeout_ms = option_long('T', "timeout", "timeout in milliseconds", true, 10000);
+    bool *verbose = option_bool('v', "verbose", "enable verbose output", true, false);
     bool *recursion_desired = option_bool('r', "rdflag", "set Recursion Desired", true, true);
     bool *enable_edns = option_bool('\0', "edns", "enable EDNS", true, true);
-    bool *trace
-        = option_bool('\0', "trace", "trace requests starting from root, ignores specified nameserver", true, false);
+    bool *trace = option_bool('\0', "trace",
+                              "trace requests starting from root, enables verbose and ignores specified nameserver",
+                              true, false);
 
     const char *program = parse_args(argc, argv);
 
@@ -39,7 +41,7 @@ int main(int argc, char **argv) {
     }
 
     uint16_t qtype = str_to_qtype(*qtype_str);
-    if (*timeout_sec <= 0) ERROR("Timeout must be a positive integer");
+    if (*timeout_ms <= 0) ERROR("Timeout must be a positive integer");
     if (*port <= 0 || *port > UINT16_MAX) ERROR("Port must be between 1 and 65535");
 
     if (!has_next_arg()) ERROR("Invalid arguments, domain is not specified");
@@ -49,17 +51,17 @@ int main(int argc, char **argv) {
     uint32_t flags = 0;
     if (*recursion_desired) flags |= RESOLVE_RECURSION_DESIRED;
     if (*enable_edns) flags |= RESOLVE_EDNS;
+    if (*verbose) flags |= RESOLVE_VERBOSE;
 
     if (*trace) {
-        flags |= RESOLVE_TRACE;
+        flags |= RESOLVE_VERBOSE;
 
         // Start search from one of the root nameservers.
         if (*nameserver_ip != NULL) printf("Ignoring specified nameserver because trace is enabled.\n");
         *nameserver_ip = ROOT_NAMESERVER_IPS[rand() % (sizeof(ROOT_NAMESERVER_IPS) / sizeof(*ROOT_NAMESERVER_IPS))];
     }
 
-    RRVec results = resolve(domain, qtype, *nameserver_ip, *port, *timeout_sec, flags);
-
+    RRVec results = resolve(domain, qtype, *nameserver_ip, *port, *timeout_ms, flags);
     if (results.length > 0) {
         printf("Answer:\n");
         for (uint32_t i = 0; i < results.length; i++) print_resource_record(&results.data[i]);
@@ -71,5 +73,6 @@ int main(int argc, char **argv) {
         printf("Nameserver does not support ANY query (see RFC8482).\n");
     }
 
+    VECTOR_FREE(&results);
     return EXIT_SUCCESS;
 }
