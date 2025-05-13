@@ -7,10 +7,10 @@ int main(void) {
     RRVec result = resolve("a." TEST_DOMAIN, TYPE_A, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0);
     ASSERT(result.length == 1);
 
-    ResourceRecord rr = result.data[0];
-    ASSERT(rr.type == TYPE_A);
-    ASSERT(result.data[0].data.ip4_address == get_ip4("1.2.3.4"));
+    ResourceRecord *rr = result.data[0];
+    ASSERT(rr->type == TYPE_A);
+    ASSERT(rr->data.ip4_address == get_ip4("1.2.3.4"));
 
-    VECTOR_FREE(&result);
+    free_rr_vec(&result);
     return EXIT_SUCCESS;
 }

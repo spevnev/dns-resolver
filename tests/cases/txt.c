@@ -7,13 +7,13 @@ int main(void) {
     RRVec result = resolve("txt." TEST_DOMAIN, TYPE_TXT, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0);
     ASSERT(result.length == 1);
 
-    ResourceRecord rr = result.data[0];
-    ASSERT(rr.type == TYPE_TXT);
+    ResourceRecord *rr = result.data[0];
+    ASSERT(rr->type == TYPE_TXT);
 
-    TXT txt = result.data[0].data.txt;
+    TXT txt = rr->data.txt;
     ASSERT(txt.length == 1);
     ASSERT(strcmp(txt.data[0], "result") == 0);
 
-    VECTOR_FREE(&result);
+    free_rr_vec(&result);
     return EXIT_SUCCESS;
 }

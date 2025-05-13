@@ -11,5 +11,6 @@
 
 RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uint16_t port, uint64_t timeout_ms,
               uint32_t options);
+void free_rr_vec(RRVec *rr_vec);
 
 #endif  // RESOLVE_H

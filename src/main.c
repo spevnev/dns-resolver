@@ -64,15 +64,15 @@ int main(int argc, char **argv) {
     RRVec result = resolve(domain, qtype, *nameserver_ip, *port, *timeout_ms, flags);
     if (result.length > 0) {
         printf("Answer:\n");
-        for (uint32_t i = 0; i < result.length; i++) print_resource_record(&result.data[i]);
+        for (uint32_t i = 0; i < result.length; i++) print_resource_record(result.data[i]);
     }
 
     // If qtype is ANY and response matches section 4.2 of RFC8482, print special message.
-    if (qtype == QTYPE_ANY && result.length == 1 && result.data[0].type == TYPE_HINFO
-        && strcmp(result.data[0].data.hinfo.cpu, "RFC8482") == 0 && result.data[0].data.hinfo.os[0] == '\0') {
+    if (qtype == QTYPE_ANY && result.length == 1 && result.data[0]->type == TYPE_HINFO
+        && strcmp(result.data[0]->data.hinfo.cpu, "RFC8482") == 0 && result.data[0]->data.hinfo.os[0] == '\0') {
         printf("Nameserver does not support ANY query (see RFC8482).\n");
     }
 
-    VECTOR_FREE(&result);
+    free_rr_vec(&result);
     return EXIT_SUCCESS;
 }

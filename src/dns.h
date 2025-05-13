@@ -11,6 +11,9 @@
 #define MAX_DOMAIN_LENGTH 255
 #define DOMAIN_SIZE (MAX_DOMAIN_LENGTH + 1)
 
+// RFC2181
+#define MAX_TTL 2147483647
+
 // Max payload size when using UDP without EDNS (RFC1035).
 #define STANDARD_UDP_PAYLOAD_SIZE 512
 // Recommended request payload size when using UDP with EDNS (RFC6891).
@@ -63,7 +66,8 @@ typedef struct {
     char *buffer;
     uint32_t length;
     uint32_t capacity;
-    char **data;  // dynamic array of string, which are stored in buffer
+    // Dynamic array of string which are stored in the buffer.
+    char **data;
 } TXT;
 
 typedef struct {
@@ -104,7 +108,7 @@ typedef struct {
     } data;
 } ResourceRecord;
 
-VECTOR_TYPEDEF(RRVec, ResourceRecord);
+VECTOR_TYPEDEF(RRVec, ResourceRecord *);
 
 typedef struct {
     uint8_t *buffer;
@@ -128,6 +132,7 @@ uint16_t write_request(Request *request, bool recursion_desired, const char *dom
 
 DNSHeader read_response_header(Response *response, uint16_t req_id);
 void validate_question(Response *response, uint16_t req_qtype, const char *req_domain);
-void read_resource_record(Response *response, ResourceRecord *rr);
+ResourceRecord *read_resource_record(Response *response);
+void free_rr(ResourceRecord *rr);
 
 #endif  // DNS_H

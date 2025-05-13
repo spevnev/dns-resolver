@@ -312,7 +312,10 @@ void validate_question(Response *response, uint16_t req_qtype, const char *req_d
     if (qclass != CLASS_IN) ERROR("Resource record class is not Internet");
 }
 
-void read_resource_record(Response *response, ResourceRecord *rr) {
+ResourceRecord *read_resource_record(Response *response) {
+    ResourceRecord *rr = malloc(sizeof(*rr));
+    if (rr == NULL) OUT_OF_MEMORY();
+
     read_domain(response, rr->domain);
 
     rr->type = read_u16(response);
@@ -324,8 +327,9 @@ void read_resource_record(Response *response, ResourceRecord *rr) {
     if (rr->type != TYPE_OPT) {
         // Class must be Internet, or it is OPT RR whose CLASS contains UDP payload size (RFC6891).
         if (class != CLASS_IN) ERROR("Resource record class is not Internet");
-        // TTL is between 0 and 2147483647 (RFC2181).
-        if (rr->ttl > 2147483647) rr->ttl = 0;
+        // TTL is an unsigned number between 0 and 2147483647 (RFC2181).
+        // Treat TTL values with the MBS set as if the value was zero.
+        if (rr->ttl > MAX_TTL) rr->ttl = 0;
     }
 
     switch (rr->type) {
@@ -372,4 +376,27 @@ void read_resource_record(Response *response, ResourceRecord *rr) {
         } break;
         default: ERROR("Invalid or unsupported resource record type %d", rr->type);
     }
+
+    return rr;
+}
+
+void free_rr(ResourceRecord *rr) {
+    switch (rr->type) {
+        case TYPE_A:
+        case TYPE_NS:
+        case TYPE_CNAME:
+        case TYPE_SOA:
+        case TYPE_AAAA:
+        case TYPE_OPT:   break;
+        case TYPE_HINFO:
+            free(rr->data.hinfo.cpu);
+            free(rr->data.hinfo.os);
+            break;
+        case TYPE_TXT:
+            free(rr->data.txt.buffer);
+            VECTOR_FREE(&rr->data.txt);
+            break;
+        default: ERROR("Invalid or unsupported resource record type %d", rr->type);
+    }
+    free(rr);
 }
