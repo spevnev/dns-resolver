@@ -1,0 +1,10 @@
+$TTL 0
+@ SOA @ @ 0 1d 1h 1w 0
+
+; Nameservers
+@      NS     ns1
+@      NS     ns2
+ns1    A      1.1.1.1
+ns2    A      2.2.2.2
+
+; End of base file

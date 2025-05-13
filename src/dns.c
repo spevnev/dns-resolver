@@ -30,13 +30,6 @@ static void write_u16(Request *request, uint16_t value) {
     request->length += sizeof(net_value);
 }
 
-static void write_u32(Request *request, uint32_t value) {
-    if (request->length + sizeof(value) > request->size) ERROR("Request buffer is too small");
-    uint32_t net_value = htonl(value);
-    memcpy(request->buffer + request->length, &net_value, sizeof(net_value));
-    request->length += sizeof(net_value);
-}
-
 static void write_domain(Request *request, const char *domain) {
     // Check root domain.
     if (domain[0] == '\0') {
