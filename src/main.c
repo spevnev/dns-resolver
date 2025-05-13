@@ -61,18 +61,18 @@ int main(int argc, char **argv) {
         *nameserver_ip = ROOT_NAMESERVER_IPS[rand() % (sizeof(ROOT_NAMESERVER_IPS) / sizeof(*ROOT_NAMESERVER_IPS))];
     }
 
-    RRVec results = resolve(domain, qtype, *nameserver_ip, *port, *timeout_ms, flags);
-    if (results.length > 0) {
+    RRVec result = resolve(domain, qtype, *nameserver_ip, *port, *timeout_ms, flags);
+    if (result.length > 0) {
         printf("Answer:\n");
-        for (uint32_t i = 0; i < results.length; i++) print_resource_record(&results.data[i]);
+        for (uint32_t i = 0; i < result.length; i++) print_resource_record(&result.data[i]);
     }
 
     // If qtype is ANY and response matches section 4.2 of RFC8482, print special message.
-    if (qtype == QTYPE_ANY && results.length == 1 && results.data[0].type == TYPE_HINFO
-        && strcmp(results.data[0].data.hinfo.cpu, "RFC8482") == 0 && results.data[0].data.hinfo.os[0] == '\0') {
+    if (qtype == QTYPE_ANY && result.length == 1 && result.data[0].type == TYPE_HINFO
+        && strcmp(result.data[0].data.hinfo.cpu, "RFC8482") == 0 && result.data[0].data.hinfo.os[0] == '\0') {
         printf("Nameserver does not support ANY query (see RFC8482).\n");
     }
 
-    VECTOR_FREE(&results);
+    VECTOR_FREE(&result);
     return EXIT_SUCCESS;
 }

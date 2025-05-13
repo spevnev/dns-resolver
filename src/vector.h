@@ -28,8 +28,9 @@
 #define VECTOR_TOP(vec) (assert((vec)->length > 0), &(vec)->data[(vec)->length - 1])
 #define VECTOR_POP(vec) (assert((vec)->length > 0), (vec)->data[--(vec)->length])
 
+#define VECTOR_RESET(vec) ((vec)->length = 0)
 #define VECTOR_FREE(vec) free((vec)->data)
 
-VECTOR_TYPEDEF(CstrVec, const char *);
+VECTOR_TYPEDEF(StrVec, char *);
 
 #endif  // VECTOR_H

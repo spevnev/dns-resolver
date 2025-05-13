@@ -123,7 +123,7 @@ static void load_resolve_config(IPVec *servers, bool verbose) {
     if (!found) add_nameserver(servers, "127.0.0.1");
 }
 
-static bool check_rrs(RRVec *results, RRVec rrs, char *sname, uint16_t qtype) {
+static bool check_rrs(RRVec *result, RRVec rrs, char *sname, uint16_t qtype) {
     bool found = false;
     bool restart;
     do {
@@ -134,7 +134,7 @@ static bool check_rrs(RRVec *results, RRVec rrs, char *sname, uint16_t qtype) {
 
             // Found it.
             if (rr->type == qtype) {
-                VECTOR_PUSH(results, *rr);
+                VECTOR_PUSH(result, *rr);
                 found = true;
             }
 
@@ -196,7 +196,8 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
     sname[domain_len] = '\0';
 
     bool found = false;
-    RRVec results = {0};
+    StrVec authority_domains = {0};
+    RRVec result = {0};
     ResourceRecord rr = {0};
     struct sockaddr_in req_addr = {
         .sin_family = AF_INET,
@@ -205,12 +206,15 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
     };
     uint16_t buffer_size = EDNS_UDP_PAYLOAD_SIZE;
     uint8_t buffer[buffer_size];
+    char addr_buffer[INET_ADDRSTRLEN];
     while (!found && servers.length > 0) {
+        for (uint32_t i = 0; i < authority_domains.length; i++) free(authority_domains.data[i]);
+        VECTOR_RESET(&authority_domains);
+
         // Get nameserver IP.
         in_addr_t server_ip = VECTOR_POP(&servers);
         req_addr.sin_addr.s_addr = server_ip;
 
-        char addr_buffer[INET_ADDRSTRLEN];
         if (inet_ntop(AF_INET, &server_ip, addr_buffer, sizeof(addr_buffer)) == NULL) PERROR("inet_ntop");
         if (verbose) printf("Resolving %s using %s.\n", sname, addr_buffer);
 
@@ -300,18 +304,17 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
                 if (rr.type == qtype || qtype == QTYPE_ANY) {
                     // RR has matching domain and type. Set `found` and print the rest of the response.
                     found = true;
-                    VECTOR_PUSH(&results, rr);
+                    VECTOR_PUSH(&result, rr);
                 } else if (rr.type == TYPE_CNAME) {
                     // Change sname to the alias.
                     memcpy(sname, rr.data.domain, strlen(rr.data.domain) + 1);
                     // Check previous RRs.
-                    if (check_rrs(&results, prev_rrs, sname, qtype)) found = true;
+                    if (check_rrs(&result, prev_rrs, sname, qtype)) found = true;
                 }
             }
             VECTOR_FREE(&prev_rrs);
         }
 
-        CstrVec authority_domains = {0};
         if (res_header.authority_count > 0) {
             if (verbose) printf("Authority section:\n");
             for (uint16_t i = 0; i < res_header.authority_count; i++) {
@@ -319,9 +322,10 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
                 if (verbose) print_resource_record(&rr);
 
                 if (rr.type == TYPE_NS) {
-                    char *domain = malloc(DOMAIN_SIZE * sizeof(*domain));
+                    size_t domain_length = strlen(rr.data.domain) + 1;
+                    char *domain = malloc(domain_length * sizeof(*domain));
                     if (domain == NULL) OUT_OF_MEMORY();
-                    memcpy(domain, rr.data.domain, strlen(rr.data.domain) + 1);
+                    memcpy(domain, rr.data.domain, domain_length);
                     VECTOR_PUSH(&authority_domains, domain);
                 }
             }
@@ -351,6 +355,7 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
                 for (uint32_t j = 0; j < authority_domains.length; j++) {
                     if (strcasecmp(authority_domains.data[j], rr.domain) == 0) {
                         VECTOR_PUSH(&servers, rr.data.ip4_address);
+                        free(authority_domains.data[j]);
                         // Delete current element by overwriting it with the last one.
                         // If we are deleting the last one, we end up reassigning it
                         // to itself and decreasing length.
@@ -383,14 +388,16 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
             for (uint32_t j = 0; j < authority_addresses.length; j++) {
                 VECTOR_PUSH(&servers, authority_addresses.data[j].data.ip4_address);
             }
+            VECTOR_FREE(&authority_addresses);
         }
-        VECTOR_FREE(&authority_domains);
     }
     if (!found) printf("Failed to resolve the domain.\n");
 
     VECTOR_FREE(&servers);
+    for (uint32_t i = 0; i < authority_domains.length; i++) free(authority_domains.data[i]);
+    VECTOR_FREE(&authority_domains);
 
-    return results;
+    return result;
 }
 
 RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uint16_t port, uint64_t timeout_ms,
@@ -408,8 +415,8 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
         .udp_timeout_ns = udp_timeout_ns,
         .time_left_ns = timeout_ms * NS_IN_MS,
     };
-    RRVec results = resolve_rec(&query, domain, qtype, nameserver_ip, port, flags);
+    RRVec result = resolve_rec(&query, domain, qtype, nameserver_ip, port, flags);
     close(fd);
 
-    return results;
+    return result;
 }
