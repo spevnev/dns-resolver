@@ -316,6 +316,8 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
                 free_rr(rr);
             }
             free_rr_vec(&prev_rrs);
+
+            if (found) break;
         }
 
         if (res_header.authority_count > 0) {
