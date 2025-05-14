@@ -1,0 +1,22 @@
+name: Tests
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+jobs:
+  run_tests:
+    runs-on: ubuntu-24.04
+    # Running without container causes EACCES in BIND.
+    container:
+      image: ubuntu:24.04
+    steps:
+    - uses: actions/checkout@v2
+    - name: Update and upgrade packages
+      run: apt-get update -y && apt-get upgrade -y
+    - name: Install packages
+      run: apt-get install -y make gcc bind9
+    - name: Run tests
+      run: make test
