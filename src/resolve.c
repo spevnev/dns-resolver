@@ -25,6 +25,7 @@ VECTOR_TYPEDEF(IPVec, in_addr_t);
 
 typedef struct {
     int fd;
+    bool timed_out;
     uint64_t time_ns;
     uint64_t udp_timeout_ns;
     uint64_t time_left_ns;
@@ -55,10 +56,13 @@ static uint64_t get_time_ns(void) {
     return ts.tv_sec * NS_IN_SEC + ts.tv_nsec;
 }
 
-static void update_time(Query *query) {
+static bool update_time(Query *query) {
     uint64_t current_time_ns = get_time_ns();
     uint64_t time_diff_ns = current_time_ns - query->time_ns;
-    if (time_diff_ns >= query->time_left_ns) ERROR("Timeout");
+    if (time_diff_ns >= query->time_left_ns) {
+        query->timed_out = true;
+        return false;
+    }
 
     query->time_left_ns -= time_diff_ns;
     query->time_ns = current_time_ns;
@@ -67,6 +71,7 @@ static void update_time(Query *query) {
         set_timeout(query->fd, query->udp_timeout_ns);
         query->udp_timeout_ns = query->time_left_ns;
     }
+    return true;
 }
 
 static bool address_equals(struct sockaddr_in a, struct sockaddr_in b) {
@@ -152,7 +157,7 @@ static bool check_rrs(RRVec *result, RRVec rrs, char *sname, uint16_t qtype) {
 static ssize_t udp_send(Query *query, Request request, struct sockaddr_in address) {
     ssize_t result
         = sendto(query->fd, request.buffer, request.length, 0, (struct sockaddr *) &address, sizeof(address));
-    update_time(query);
+    if (!update_time(query)) return -1;
     return result;
 }
 
@@ -164,13 +169,13 @@ static ssize_t udp_receive(Query *query, uint8_t *buffer, size_t buffer_size, st
     do {
         address_length = sizeof(address);
         result = recvfrom(query->fd, buffer, buffer_size, 0, (struct sockaddr *) &address, &address_length);
-        update_time(query);
+        if (!update_time(query)) return -1;
     } while (result != -1 && (address_length != sizeof(address) || !address_equals(request_address, address)));
     return result;
 }
 
-static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const char *nameserver_ip, uint16_t port,
-                         uint32_t flags) {
+static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_t qtype, const char *nameserver_ip,
+                        uint16_t port, uint32_t flags) {
     bool recursion_desired = flags & RESOLVE_RECURSION_DESIRED;
     bool enable_edns = flags & RESOLVE_EDNS;
     bool verbose = flags & RESOLVE_VERBOSE;
@@ -196,8 +201,7 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
     sname[domain_len] = '\0';
 
     bool found = false;
-    StrVec authority_domains = {0};
-    RRVec result = {0};
+    StrVec authority_ns_domains = {0};
     struct sockaddr_in req_addr = {
         .sin_family = AF_INET,
         .sin_port = htons(port),
@@ -207,8 +211,8 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
     uint8_t buffer[buffer_size];
     char addr_buffer[INET_ADDRSTRLEN];
     while (!found && servers.length > 0) {
-        for (uint32_t i = 0; i < authority_domains.length; i++) free(authority_domains.data[i]);
-        VECTOR_RESET(&authority_domains);
+        for (uint32_t i = 0; i < authority_ns_domains.length; i++) free(authority_ns_domains.data[i]);
+        VECTOR_RESET(&authority_ns_domains);
 
         // Get nameserver IP.
         in_addr_t server_ip = VECTOR_POP(&servers);
@@ -225,8 +229,9 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
         };
         uint16_t id = write_request(&request, recursion_desired, sname, qtype, enable_edns, buffer_size);
         if (udp_send(query, request, req_addr) != request.length) {
+            if (query->timed_out) break;
+
             if (errno == EAGAIN) {
-                // Try other nameserver.
                 if (verbose) fprintf(stderr, "Request timeout.\n");
                 continue;
             } else {
@@ -236,9 +241,10 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
 
         ssize_t response_length = udp_receive(query, buffer, buffer_size, req_addr);
         if (response_length == -1) {
+            if (query->timed_out) break;
+
             if (errno == EAGAIN) {
-                // Try other nameserver.
-                if (verbose) fprintf(stderr, "Request timeout.\n");
+                if (verbose) fprintf(stderr, "Response timeout.\n");
                 continue;
             } else {
                 PERROR("recvfrom");
@@ -261,36 +267,29 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
             case RCODE_SUCCESS: break;
             case RCODE_NAME_ERROR:
                 if (!res_header.is_authoritative) ERROR("Name error");
-                printf("Domain name does not exist.\n");
                 found = true;
-                break;
+                continue;
             case RCODE_FORMAT_ERROR: ERROR("Format error");
             case RCODE_SERVER_ERROR:
-                // Try other nameserver.
                 if (verbose) fprintf(stderr, "Nameserver error.\n");
                 continue;
             case RCODE_NOT_IMPLEMENTED:
-                // Try other nameserver.
                 if (verbose) fprintf(stderr, "Nameserver does not support this type of query.\n");
                 continue;
             case RCODE_REFUSED:
-                // Try other nameserver.
                 if (verbose) fprintf(stderr, "Nameserver refused to answer.\n");
                 continue;
             default: ERROR("Invalid or unsupported response code %d", res_header.response_code);
         }
-        if (found) break;
 
         // Validate response question.
         validate_question(&response, qtype, sname);
 
         // Read resource records.
         if (res_header.answer_count > 0) {
-            // If qtype is ANY, terminate search after any response with answers section.
-            if (qtype == QTYPE_ANY) found = true;
+            if (verbose) printf("Answer section:\n");
 
             RRVec prev_rrs = {0};
-            if (verbose) printf("Answer section:\n");
             for (uint16_t i = 0; i < res_header.answer_count; i++) {
                 ResourceRecord *rr = read_resource_record(&response);
                 if (verbose) print_resource_record(rr);
@@ -301,9 +300,8 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
                 }
 
                 if (rr->type == qtype || qtype == QTYPE_ANY) {
-                    // RR has matching domain and type. Set `found` and print the rest of the response.
                     found = true;
-                    VECTOR_PUSH(&result, rr);
+                    VECTOR_PUSH(result, rr);
                     continue;
                 }
 
@@ -311,12 +309,14 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
                     // Change sname to the alias.
                     memcpy(sname, rr->data.domain, strlen(rr->data.domain) + 1);
                     // Check previous RRs.
-                    if (check_rrs(&result, prev_rrs, sname, qtype)) found = true;
+                    if (check_rrs(result, prev_rrs, sname, qtype)) found = true;
                 }
                 free_rr(rr);
             }
             free_rr_vec(&prev_rrs);
 
+            // If qtype is ANY, terminate search after any response with answers section.
+            if (qtype == QTYPE_ANY) found = true;
             if (found) break;
         }
 
@@ -331,7 +331,7 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
                     char *domain = malloc(domain_length * sizeof(*domain));
                     if (domain == NULL) OUT_OF_MEMORY();
                     memcpy(domain, rr->data.domain, domain_length);
-                    VECTOR_PUSH(&authority_domains, domain);
+                    VECTOR_PUSH(&authority_ns_domains, domain);
                 }
                 free_rr(rr);
             }
@@ -363,14 +363,14 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
                     continue;
                 }
 
-                for (uint32_t j = 0; j < authority_domains.length; j++) {
-                    if (strcasecmp(authority_domains.data[j], rr->domain) == 0) {
+                for (uint32_t j = 0; j < authority_ns_domains.length; j++) {
+                    if (strcasecmp(authority_ns_domains.data[j], rr->domain) == 0) {
                         VECTOR_PUSH(&servers, rr->data.ip4_address);
-                        free(authority_domains.data[j]);
+                        free(authority_ns_domains.data[j]);
                         // Delete current element by overwriting it with the last one.
                         // If we are deleting the last one, we end up reassigning it
                         // to itself and decreasing length.
-                        authority_domains.data[j] = VECTOR_POP(&authority_domains);
+                        authority_ns_domains.data[j] = VECTOR_POP(&authority_ns_domains);
                         break;
                     }
                 }
@@ -394,26 +394,27 @@ static RRVec resolve_rec(Query *query, const char *domain, uint16_t qtype, const
         }
         if (verbose) printf("\n");
 
-        for (uint32_t i = 0; i < authority_domains.length; i++) {
-            RRVec authority_addresses
-                = resolve_rec(query, authority_domains.data[i], TYPE_A, nameserver_ip, port, flags);
-            for (uint32_t j = 0; j < authority_addresses.length; j++) {
-                VECTOR_PUSH(&servers, authority_addresses.data[j]->data.ip4_address);
+        for (uint32_t i = 0; i < authority_ns_domains.length; i++) {
+            RRVec nameserver_addresses = {0};
+            bool found_nameserver = resolve_rec(&nameserver_addresses, query, authority_ns_domains.data[i], TYPE_A,
+                                                nameserver_ip, port, flags);
+            if (!found_nameserver) continue;
+            for (uint32_t j = 0; j < nameserver_addresses.length; j++) {
+                VECTOR_PUSH(&servers, nameserver_addresses.data[j]->data.ip4_address);
             }
-            free_rr_vec(&authority_addresses);
+            free_rr_vec(&nameserver_addresses);
         }
     }
-    if (!found) printf("Failed to resolve the domain.\n");
 
     VECTOR_FREE(&servers);
-    for (uint32_t i = 0; i < authority_domains.length; i++) free(authority_domains.data[i]);
-    VECTOR_FREE(&authority_domains);
+    for (uint32_t i = 0; i < authority_ns_domains.length; i++) free(authority_ns_domains.data[i]);
+    VECTOR_FREE(&authority_ns_domains);
 
-    return result;
+    return found;
 }
 
-RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uint16_t port, uint64_t timeout_ms,
-              uint32_t flags) {
+bool resolve(RRVec *result, const char *domain, uint16_t qtype, const char *nameserver_ip, uint16_t port,
+             uint64_t timeout_ms, uint32_t flags) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd == -1) PERROR("socket");
 
@@ -427,10 +428,10 @@ RRVec resolve(const char *domain, uint16_t qtype, const char *nameserver_ip, uin
         .udp_timeout_ns = udp_timeout_ns,
         .time_left_ns = timeout_ms * NS_IN_MS,
     };
-    RRVec result = resolve_rec(&query, domain, qtype, nameserver_ip, port, flags);
+    bool found = resolve_rec(result, &query, domain, qtype, nameserver_ip, port, flags);
     close(fd);
 
-    return result;
+    return found;
 }
 
 void free_rr_vec(RRVec *rr_vec) {

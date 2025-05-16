@@ -4,9 +4,11 @@
 
 int main(void) {
     /// mult.txt TXT a b c d e
-    RRVec result = resolve("mult.txt." TEST_DOMAIN, TYPE_TXT, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0);
-    ASSERT(result.length == 1);
+    RRVec result = {0};
+    bool found = resolve(&result, "mult.txt." TEST_DOMAIN, TYPE_TXT, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0);
+    ASSERT(found);
 
+    ASSERT(result.length == 1);
     ResourceRecord *rr = result.data[0];
     ASSERT(rr->type == TYPE_TXT);
 

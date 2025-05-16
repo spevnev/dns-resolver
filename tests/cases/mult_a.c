@@ -6,7 +6,9 @@ int main(void) {
     /// mult.a A 1.1.1.1
     /// mult.a A 2.2.2.2
     /// mult.a A 3.3.3.3
-    RRVec result = resolve("mult.a." TEST_DOMAIN, TYPE_A, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0);
+    RRVec result = {0};
+    bool found = resolve(&result, "mult.a." TEST_DOMAIN, TYPE_A, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0);
+    ASSERT(found);
     ASSERT(result.length == 3);
 
     bool found1 = false;
