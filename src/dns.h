@@ -82,7 +82,6 @@ typedef struct {
     char domain[DOMAIN_SIZE];
     uint16_t type;
     uint32_t ttl;
-    uint16_t data_length;
     union {
         in_addr_t ip4_address;
         char domain[DOMAIN_SIZE];

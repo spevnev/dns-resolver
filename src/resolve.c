@@ -26,8 +26,11 @@ VECTOR_TYPEDEF(IPVec, in_addr_t);
 typedef struct {
     int fd;
     bool timed_out;
+    // Time when it was last updated.
     uint64_t time_ns;
+    // UDP request/response timeout.
     uint64_t udp_timeout_ns;
+    // Time left for DNS query.
     uint64_t time_left_ns;
 } Query;
 
@@ -56,7 +59,7 @@ static uint64_t get_time_ns(void) {
     return ts.tv_sec * NS_IN_SEC + ts.tv_nsec;
 }
 
-static bool update_time(Query *query) {
+static bool update_query_timeout(Query *query) {
     uint64_t current_time_ns = get_time_ns();
     uint64_t time_diff_ns = current_time_ns - query->time_ns;
     if (time_diff_ns >= query->time_left_ns) {
@@ -128,7 +131,7 @@ static void load_resolve_config(IPVec *servers, bool verbose) {
     if (!found) add_nameserver(servers, "127.0.0.1");
 }
 
-static bool check_rrs(RRVec *result, RRVec rrs, char *sname, uint16_t qtype) {
+static bool follow_cnames(RRVec *result, RRVec rrs, char *sname, uint16_t qtype) {
     bool found = false;
     bool restart;
     do {
@@ -157,7 +160,7 @@ static bool check_rrs(RRVec *result, RRVec rrs, char *sname, uint16_t qtype) {
 static ssize_t udp_send(Query *query, Request request, struct sockaddr_in address) {
     ssize_t result
         = sendto(query->fd, request.buffer, request.length, 0, (struct sockaddr *) &address, sizeof(address));
-    if (!update_time(query)) return -1;
+    if (!update_query_timeout(query)) return -1;
     return result;
 }
 
@@ -169,24 +172,16 @@ static ssize_t udp_receive(Query *query, uint8_t *buffer, size_t buffer_size, st
     do {
         address_length = sizeof(address);
         result = recvfrom(query->fd, buffer, buffer_size, 0, (struct sockaddr *) &address, &address_length);
-        if (!update_time(query)) return -1;
+        if (!update_query_timeout(query)) return -1;
     } while (result != -1 && (address_length != sizeof(address) || !address_equals(request_address, address)));
     return result;
 }
 
 static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_t qtype, const char *nameserver_ip,
                         uint16_t port, uint32_t flags) {
-    bool recursion_desired = flags & RESOLVE_RECURSION_DESIRED;
-    bool enable_edns = flags & RESOLVE_EDNS;
+    bool recursion_desired = !(flags & RESOLVE_DISABLE_RDFLAG);
+    bool enable_edns = !(flags & RESOLVE_DISABLE_EDNS);
     bool verbose = flags & RESOLVE_VERBOSE;
-
-    // Create list of nameservers.
-    IPVec servers = {0};
-    if (nameserver_ip != NULL) {
-        add_nameserver(&servers, nameserver_ip);
-    } else {
-        load_resolve_config(&servers, true);
-    }
 
     // Set initial search name.
     char sname[DOMAIN_SIZE];
@@ -196,6 +191,14 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
     if (domain[domain_len - 1] == '.') domain_len--;
     if (domain_len > 0 && domain[domain_len - 1] == '.') ERROR("Invalid domain name, multiple trailing dots");
     if (domain_len > MAX_DOMAIN_LENGTH) ERROR("Invalid domain name, maximum length is %d", MAX_DOMAIN_LENGTH);
+
+    // Create list of nameservers.
+    IPVec servers = {0};
+    if (nameserver_ip != NULL) {
+        add_nameserver(&servers, nameserver_ip);
+    } else {
+        load_resolve_config(&servers, true);
+    }
 
     memcpy(sname, domain, domain_len);
     sname[domain_len] = '\0';
@@ -309,7 +312,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                     // Change sname to the alias.
                     memcpy(sname, rr->data.domain, strlen(rr->data.domain) + 1);
                     // Check previous RRs.
-                    if (check_rrs(result, prev_rrs, sname, qtype)) found = true;
+                    if (follow_cnames(result, prev_rrs, sname, qtype)) found = true;
                 }
                 free_rr(rr);
             }
@@ -392,13 +395,15 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                 default: ERROR("Invalid or unsupported response code %d", extended_response_code);
             }
         }
+
         if (verbose) printf("\n");
 
         for (uint32_t i = 0; i < authority_ns_domains.length; i++) {
+            const char *ns_domain = authority_ns_domains.data[i];
+
             RRVec nameserver_addresses = {0};
-            bool found_nameserver = resolve_rec(&nameserver_addresses, query, authority_ns_domains.data[i], TYPE_A,
-                                                nameserver_ip, port, flags);
-            if (!found_nameserver) continue;
+            if (!resolve_rec(&nameserver_addresses, query, ns_domain, TYPE_A, nameserver_ip, port, flags)) continue;
+
             for (uint32_t j = 0; j < nameserver_addresses.length; j++) {
                 VECTOR_PUSH(&servers, nameserver_addresses.data[j]->data.ip4_address);
             }

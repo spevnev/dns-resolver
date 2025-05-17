@@ -321,8 +321,8 @@ ResourceRecord *read_resource_record(Response *response) {
     rr->type = read_u16(response);
     uint16_t class = read_u16(response);
     rr->ttl = read_u32(response);
-    rr->data_length = read_u16(response);
-    if (response->current + rr->data_length > response->length) ERROR("Response is too short");
+    uint16_t data_length = read_u16(response);
+    if (response->current + data_length > response->length) ERROR("Response is too short");
 
     if (rr->type != TYPE_OPT) {
         // Class must be Internet, or it is OPT RR whose CLASS contains UDP payload size (RFC6891).
@@ -334,7 +334,7 @@ ResourceRecord *read_resource_record(Response *response) {
 
     switch (rr->type) {
         case TYPE_A:
-            if (rr->data_length != sizeof(rr->data.ip4_address)) ERROR("Invalid A data length");
+            if (data_length != sizeof(rr->data.ip4_address)) ERROR("Invalid A data length");
             memcpy(&rr->data.ip4_address, response->buffer + response->current, sizeof(rr->data.ip4_address));
             response->current += sizeof(rr->data.ip4_address);
             break;
@@ -353,9 +353,9 @@ ResourceRecord *read_resource_record(Response *response) {
             rr->data.hinfo.cpu = read_char_string(response);
             rr->data.hinfo.os = read_char_string(response);
             break;
-        case TYPE_TXT: rr->data.txt = read_txt_data(response, rr->data_length); break;
+        case TYPE_TXT: rr->data.txt = read_txt_data(response, data_length); break;
         case TYPE_AAAA:
-            if (rr->data_length != sizeof(rr->data.ip6_address)) ERROR("Invalid AAAA data length");
+            if (data_length != sizeof(rr->data.ip6_address)) ERROR("Invalid AAAA data length");
             memcpy(&rr->data.ip6_address, response->buffer + response->current, sizeof(rr->data.ip6_address));
             response->current += sizeof(rr->data.ip6_address);
             break;
@@ -372,7 +372,7 @@ ResourceRecord *read_resource_record(Response *response) {
             if (opt_fields.version > EDNS_VERSION) ERROR("Unsupported or invalid EDNS version");
 
             // Ignore additional options.
-            response->current += rr->data_length;
+            response->current += data_length;
         } break;
         default: ERROR("Invalid or unsupported resource record type %d", rr->type);
     }

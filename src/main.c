@@ -25,7 +25,7 @@ int main(int argc, char **argv) {
     const char **nameserver_ip = option_str('s', "server", "specify nameserver IP address", false, NULL);
     long *port = option_long('p', "port", "specify nameserver port", true, DNS_PORT);
     const char **qtype_str = option_str('t', "type", "specify query type", true, "A");
-    long *timeout_ms = option_long('T', "timeout", "timeout in milliseconds", true, 10000);
+    long *timeout_s = option_long('T', "timeout", "timeout in seconds", true, 10);
     bool *verbose = option_bool('v', "verbose", "enable verbose output", true, false);
     bool *recursion_desired = option_bool('r', "rdflag", "set Recursion Desired", true, true);
     bool *enable_edns = option_bool('\0', "edns", "enable EDNS", true, true);
@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
     }
 
     uint16_t qtype = str_to_qtype(*qtype_str);
-    if (*timeout_ms <= 0) ERROR("Timeout must be a positive integer");
+    if (*timeout_s <= 0) ERROR("Timeout must be a positive integer");
     if (*port <= 0 || *port > UINT16_MAX) ERROR("Port must be between 1 and 65535");
 
     if (!has_next_arg()) ERROR("Invalid arguments, domain is not specified");
@@ -49,8 +49,8 @@ int main(int argc, char **argv) {
     if (has_next_arg()) ERROR("Expected one argument (domain) but found \"%s\" and \"%s\"", domain, next_arg());
 
     uint32_t flags = 0;
-    if (*recursion_desired) flags |= RESOLVE_RECURSION_DESIRED;
-    if (*enable_edns) flags |= RESOLVE_EDNS;
+    if (!*recursion_desired) flags |= RESOLVE_DISABLE_RDFLAG;
+    if (!*enable_edns) flags |= RESOLVE_DISABLE_EDNS;
     if (*verbose) flags |= RESOLVE_VERBOSE;
 
     if (*trace) {
@@ -62,7 +62,7 @@ int main(int argc, char **argv) {
     }
 
     RRVec result = {0};
-    bool found = resolve(&result, domain, qtype, *nameserver_ip, *port, *timeout_ms, flags);
+    bool found = resolve(&result, domain, qtype, *nameserver_ip, *port, *timeout_s * 1000, flags);
     if (!found) {
         printf("Failed to resolve the domain.\n");
     } else if (result.length == 0) {
