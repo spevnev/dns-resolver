@@ -194,7 +194,7 @@ const char *type_to_str(uint16_t type) {
 }
 
 void print_resource_record(ResourceRecord *rr) {
-    printf("%-24s %-8u %-6s ", rr->domain, rr->ttl, type_to_str(rr->type));
+    printf("%-24s %-8u %-6s ", rr->domain[0] == '\0' ? "." : rr->domain, rr->ttl, type_to_str(rr->type));
     switch (rr->type) {
         case TYPE_A: {
             char buffer[INET_ADDRSTRLEN];
