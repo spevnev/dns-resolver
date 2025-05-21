@@ -243,6 +243,12 @@ static bool find_nameserver(size_t *zone_index, size_t *nameserver_index, Query 
     }
 }
 
+static void remove_nameserver(Query *query, size_t zone_index, size_t nameserver_index) {
+    Zone *zone = &query->zones.data[zone_index];
+    VECTOR_REMOVE(&zone->ns_addresses, nameserver_index);
+    if (zone->ns_addresses.length == 0 && zone->ns_domains.length == 0) VECTOR_REMOVE(&query->zones, zone_index);
+}
+
 static bool is_subdomain(const char *subdomain, const char *domain) {
     size_t subdomain_length = strlen(subdomain);
     size_t domain_length = strlen(domain);
@@ -252,10 +258,10 @@ static bool is_subdomain(const char *subdomain, const char *domain) {
     return strcasecmp(subdomain + subdomain_prefix_length, domain) == 0;
 }
 
-static void remove_nameserver(Query *query, size_t zone_index, size_t nameserver_index) {
-    Zone *zone = &query->zones.data[zone_index];
-    VECTOR_REMOVE(&zone->ns_addresses, nameserver_index);
-    if (zone->ns_addresses.length == 0 && zone->ns_domains.length == 0) VECTOR_REMOVE(&query->zones, zone_index);
+static void free_zone(Zone *zone) {
+    VECTOR_FREE(&zone->ns_addresses);
+    for (uint32_t j = 0; j < zone->ns_domains.length; j++) free(zone->ns_domains.data[j]);
+    VECTOR_FREE(&zone->ns_domains);
 }
 
 static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_t qtype) {
@@ -269,7 +275,6 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
     char sname[DOMAIN_SIZE];
     memcpy(sname, domain, domain_len);
     sname[domain_len] = '\0';
-
 
     bool found = false;
     struct sockaddr_in req_addr = {
@@ -287,6 +292,8 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
         in_addr_t server_ip = nameserver_zone->ns_addresses.data[nameserver_index];
 
         if (query->verbose) {
+            printf("\n");
+
             if (inet_ntop(AF_INET, &server_ip, addr_buffer, sizeof(addr_buffer)) == NULL) PERROR("inet_ntop");
             printf("Resolving %s using %s (%s).\n", sname, addr_buffer, nameserver_zone->domain);
         }
@@ -473,6 +480,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
             if (query->enable_edns && !contains_opt) {
                 if (query->verbose) fprintf(stderr, "Nameserver does not support EDNS.\n");
                 remove_nameserver(query, zone_index, nameserver_index);
+                free_zone(&authority_zone);
                 continue;
             }
 
@@ -481,14 +489,13 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                 case RCODE_BAD_VERSION:
                     if (query->verbose) fprintf(stderr, "Nameserver does not support EDNS version %d.\n", EDNS_VERSION);
                     remove_nameserver(query, zone_index, nameserver_index);
+                    free_zone(&authority_zone);
                     continue;
                 default: ERROR("Invalid or unsupported response code %d", extended_response_code);
             }
 
             VECTOR_PUSH(&query->zones, authority_zone);
         }
-
-        if (query->verbose) printf("\n");
     }
 
     return found;
@@ -518,7 +525,7 @@ bool resolve(RRVec *result, const char *domain, uint16_t qtype, const char *name
         .zones = {0},
     };
 
-    // Create list of nameservers.
+    // Create a zone of initial nameservers.
     Zone zone = {
         .domain = "",  // root
         .ns_addresses = {0},
@@ -535,12 +542,7 @@ bool resolve(RRVec *result, const char *domain, uint16_t qtype, const char *name
 
     bool found = resolve_rec(result, &query, domain, qtype);
 
-    for (uint32_t i = 0; i < query.zones.length; i++) {
-        Zone *zone = &query.zones.data[i];
-        VECTOR_FREE(&zone->ns_addresses);
-        for (uint32_t j = 0; j < zone->ns_domains.length; j++) free(zone->ns_domains.data[j]);
-        VECTOR_FREE(&zone->ns_domains);
-    }
+    for (uint32_t i = 0; i < query.zones.length; i++) free_zone(&query.zones.data[i]);
     VECTOR_FREE(&query.zones);
     close(fd);
     return found;

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "args.h"
 #include "dns.h"
 #include "error.h"
@@ -21,6 +22,8 @@ static void usage(const char *program) {
 }
 
 int main(int argc, char **argv) {
+    srand(time(NULL));
+
     bool *help = option_bool('h', "help", "show this message", false, false);
     const char **nameserver_ip = option_str('s', "server", "specify nameserver IP address", false, NULL);
     long *port = option_long('p', "port", "specify nameserver port", true, DNS_PORT);
@@ -29,9 +32,7 @@ int main(int argc, char **argv) {
     bool *verbose = option_bool('v', "verbose", "enable verbose output", true, false);
     bool *recursion_desired = option_bool('r', "rdflag", "set Recursion Desired", true, true);
     bool *enable_edns = option_bool('\0', "edns", "enable EDNS", true, true);
-    bool *trace = option_bool('\0', "trace",
-                              "trace requests starting from root, enables verbose and ignores specified nameserver",
-                              true, false);
+    bool *trace = option_bool('\0', "trace", "trace delegations from the root nameserver", true, false);
 
     const char *program = parse_args(argc, argv);
 
