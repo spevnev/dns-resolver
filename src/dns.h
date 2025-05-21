@@ -6,6 +6,9 @@
 #include <stdint.h>
 #include "vector.h"
 
+#define ROOT_NAMESERVERS_LENGTH 13
+extern const char *ROOT_NAMESERVER_IPS[ROOT_NAMESERVERS_LENGTH];
+
 #define DNS_PORT 53
 
 #define MAX_DOMAIN_LENGTH 255
@@ -31,7 +34,6 @@
 #define TYPE_TXT 16
 #define TYPE_AAAA 28
 #define TYPE_OPT 41
-
 #define QTYPE_ANY 255
 
 #define RCODE_SUCCESS 0
@@ -70,6 +72,7 @@ typedef struct {
     char **data;
 } TXT;
 
+// Struct to interpret OPT RR's ttl field (in network order).
 typedef struct {
     uint8_t extended_rcode;
     uint8_t version;
@@ -86,13 +89,13 @@ typedef struct {
         in_addr_t ip4_address;
         char domain[DOMAIN_SIZE];
         struct {
-            char mname[DOMAIN_SIZE];
-            char rname[DOMAIN_SIZE];
+            char master_name[DOMAIN_SIZE];
+            char responsible_name[DOMAIN_SIZE];
             uint32_t serial;
             uint32_t refresh;
             uint32_t retry;
             uint32_t expire;
-            uint32_t min_ttl;
+            uint32_t negative_ttl;
         } soa;
         struct {
             char *cpu;
@@ -125,13 +128,13 @@ uint16_t str_to_qtype(const char *str);
 const char *type_to_str(uint16_t type);
 
 void print_resource_record(ResourceRecord *rr);
+void free_resource_record(ResourceRecord *rr);
 
 uint16_t write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
                        uint16_t udp_payload_size);
 
-DNSHeader read_response_header(Response *response, uint16_t req_id);
-void validate_question(Response *response, uint16_t req_qtype, const char *req_domain);
+DNSHeader read_response_header(Response *response, uint16_t request_id);
+void validate_question(Response *response, uint16_t request_qtype, const char *request_domain);
 ResourceRecord *read_resource_record(Response *response);
-void free_rr(ResourceRecord *rr);
 
 #endif  // DNS_H

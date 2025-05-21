@@ -11,12 +11,17 @@
 #include "error.h"
 #include "vector.h"
 
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
+const char *ROOT_NAMESERVER_IPS[ROOT_NAMESERVERS_LENGTH] = {
+    "198.41.0.4",    "170.247.170.2", "192.33.4.12",   "199.7.91.13",  "192.203.230.10", "192.5.5.241",  "192.112.36.4",
+    "198.97.190.53", "192.36.148.17", "192.58.128.30", "193.0.14.129", "199.7.83.42",    "202.12.27.33",
+};
 
 static const uint8_t LABEL_DATA_MASK = 63;      // 00111111
 static const uint8_t LABEL_TYPE_MASK = 192;     // 11000000
 static const uint8_t LABEL_TYPE_POINTER = 192;  // 11000000
 static const uint8_t LABEL_TYPE_NORMAL = 0;     // 00000000
+
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 static void write_u8(Request *request, uint8_t value) {
     if (request->length + sizeof(value) > request->size) ERROR("Request buffer is too small");
@@ -43,6 +48,7 @@ static void write_domain(Request *request, const char *domain) {
         if (*ch == '.' || *ch == '\0') {
             uint8_t len = ch - start;
             write_u8(request, len);
+            if (request->length + len > request->size) ERROR("Request buffer is too small");
             memcpy(request->buffer + request->length, start, len);
             request->length += len;
             start = ch + 1;
@@ -204,8 +210,8 @@ void print_resource_record(ResourceRecord *rr) {
         case TYPE_NS:
         case TYPE_CNAME: printf("%s", rr->data.domain); break;
         case TYPE_SOA:
-            printf("%s %s %u %u %u %u %u", rr->data.soa.mname, rr->data.soa.rname, rr->data.soa.serial,
-                   rr->data.soa.refresh, rr->data.soa.retry, rr->data.soa.expire, rr->data.soa.min_ttl);
+            printf("%s %s %u %u %u %u %u", rr->data.soa.master_name, rr->data.soa.responsible_name, rr->data.soa.serial,
+                   rr->data.soa.refresh, rr->data.soa.retry, rr->data.soa.expire, rr->data.soa.negative_ttl);
             break;
         case TYPE_HINFO: printf("%s %s", rr->data.hinfo.cpu, rr->data.hinfo.os); break;
         case TYPE_TXT:
@@ -247,7 +253,7 @@ uint16_t write_request(Request *request, bool recursion_desired, const char *dom
     memcpy(request->buffer + request->length, &header, sizeof(header));
     request->length += sizeof(header);
 
-    // Write question:
+    // Write question.
     write_domain(request, domain);
     write_u16(request, qtype);
     write_u16(request, CLASS_IN);
@@ -279,7 +285,7 @@ uint16_t write_request(Request *request, bool recursion_desired, const char *dom
     return id;
 }
 
-DNSHeader read_response_header(Response *response, uint16_t req_id) {
+DNSHeader read_response_header(Response *response, uint16_t request_id) {
     DNSHeader header;
     if (response->current + sizeof(header) > response->length) ERROR("Response is too short");
 
@@ -294,19 +300,19 @@ DNSHeader read_response_header(Response *response, uint16_t req_id) {
 
     if (!header.is_response) ERROR("Message is not a response");
     if (header.opcode != OPCODE_QUERY) ERROR("Invalid response opcode");
-    if (header.id != req_id) ERROR("Response id does not match request id");
+    if (header.id != request_id) ERROR("Response id does not match request id");
     if (header.question_count != 1) ERROR("Question count is not 1");  // RFC9619
 
     return header;
 }
 
-void validate_question(Response *response, uint16_t req_qtype, const char *req_domain) {
+void validate_question(Response *response, uint16_t request_qtype, const char *request_domain) {
     char domain[DOMAIN_SIZE];
     read_domain(response, domain);
-    if (strcasecmp(domain, req_domain) != 0) ERROR("Invalid domain in response");
+    if (strcasecmp(domain, request_domain) != 0) ERROR("Invalid domain in response");
 
     uint16_t qtype = read_u16(response);
-    if (qtype != req_qtype) ERROR("Invalid response question type");
+    if (qtype != request_qtype) ERROR("Invalid response question type");
 
     uint16_t qclass = read_u16(response);
     if (qclass != CLASS_IN) ERROR("Resource record class is not Internet");
@@ -341,13 +347,13 @@ ResourceRecord *read_resource_record(Response *response) {
         case TYPE_NS:
         case TYPE_CNAME: read_domain(response, rr->data.domain); break;
         case TYPE_SOA:   {
-            read_domain(response, rr->data.soa.mname);
-            read_domain(response, rr->data.soa.rname);
+            read_domain(response, rr->data.soa.master_name);
+            read_domain(response, rr->data.soa.responsible_name);
             rr->data.soa.serial = read_u32(response);
             rr->data.soa.refresh = read_u32(response);
             rr->data.soa.retry = read_u32(response);
             rr->data.soa.expire = read_u32(response);
-            rr->data.soa.min_ttl = read_u32(response);
+            rr->data.soa.negative_ttl = read_u32(response);
         } break;
         case TYPE_HINFO:
             rr->data.hinfo.cpu = read_char_string(response);
@@ -380,7 +386,7 @@ ResourceRecord *read_resource_record(Response *response) {
     return rr;
 }
 
-void free_rr(ResourceRecord *rr) {
+void free_resource_record(ResourceRecord *rr) {
     switch (rr->type) {
         case TYPE_A:
         case TYPE_NS:

@@ -258,6 +258,23 @@ static bool is_subdomain(const char *subdomain, const char *domain) {
     return strcasecmp(subdomain + subdomain_prefix_length, domain) == 0;
 }
 
+static void add_root_zone(ZoneVec *zones) {
+    Zone zone = {
+        .domain = "",
+        .ns_addresses = {0},
+        .ns_domains = {0},
+    };
+
+    in_addr_t ip_addr;
+    for (size_t i = 0; i < ROOT_NAMESERVERS_LENGTH; i++) {
+        int result = inet_pton(AF_INET, ROOT_NAMESERVER_IPS[i], &ip_addr);
+        assert(result == 1);
+        VECTOR_PUSH(&zone.ns_addresses, ip_addr);
+    }
+
+    VECTOR_PUSH(zones, zone);
+}
+
 static void free_zone(Zone *zone) {
     VECTOR_FREE(&zone->ns_addresses);
     for (uint32_t j = 0; j < zone->ns_domains.length; j++) free(zone->ns_domains.data[j]);
@@ -285,6 +302,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
     uint16_t buffer_size = EDNS_UDP_PAYLOAD_SIZE;
     uint8_t buffer[buffer_size];
     char addr_buffer[INET_ADDRSTRLEN];
+    RRVec prev_rrs = {0};
     size_t nameserver_index;
     size_t zone_index;
     while (!found && find_nameserver(&zone_index, &nameserver_index, query, sname)) {
@@ -371,7 +389,9 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
         if (res_header.answer_count > 0) {
             if (query->verbose) printf("Answer section:\n");
 
-            RRVec prev_rrs = {0};
+            for (uint32_t i = 0; i < prev_rrs.length; i++) free_resource_record(prev_rrs.data[i]);
+            VECTOR_RESET(&prev_rrs);
+
             for (uint16_t i = 0; i < res_header.answer_count; i++) {
                 ResourceRecord *rr = read_resource_record(&response);
                 if (query->verbose) print_resource_record(rr);
@@ -393,9 +413,8 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                     // Check previous RRs.
                     if (follow_cnames(result, prev_rrs, sname, qtype)) found = true;
                 }
-                free_rr(rr);
+                free_resource_record(rr);
             }
-            free_rr_vec(&prev_rrs);
 
             // If qtype is ANY, terminate search after any response with answers section.
             if (qtype == QTYPE_ANY) found = true;
@@ -426,14 +445,11 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                         ERROR("Authority section should refer to a single zone but found many");
                     }
 
-                    size_t domain_len = strlen(rr->data.domain);
-                    char *domain = malloc(domain_len + 1);
+                    char *domain = strdup(rr->data.domain);
                     if (domain == NULL) OUT_OF_MEMORY();
-                    memcpy(domain, rr->data.domain, domain_len);
-                    domain[domain_len] = '\0';
                     VECTOR_PUSH(&authority_zone.ns_domains, domain);
                 }
-                free_rr(rr);
+                free_resource_record(rr);
             }
         }
 
@@ -446,7 +462,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                 if (rr->type == TYPE_OPT) {
                     contains_opt = true;
                     extended_response_code = (((uint16_t) rr->data.opt.extended_rcode) << 4) | res_header.response_code;
-                    free_rr(rr);
+                    free_resource_record(rr);
                     continue;
                 }
 
@@ -459,7 +475,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                 }
 
                 if (rr->type != TYPE_A) {
-                    free_rr(rr);
+                    free_resource_record(rr);
                     continue;
                 }
 
@@ -473,7 +489,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                         break;
                     }
                 }
-                free_rr(rr);
+                free_resource_record(rr);
             }
 
             if (!query->enable_edns && contains_opt) ERROR("Nameserver sent OPT although EDNS is disabled");
@@ -498,10 +514,11 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
         }
     }
 
+    free_rr_vec(&prev_rrs);
     return found;
 }
 
-bool resolve(RRVec *result, const char *domain, uint16_t qtype, const char *nameserver_ip, uint16_t port,
+bool resolve(RRVec *result, const char *domain, uint16_t qtype, const char *nameserver, uint16_t port,
              uint64_t timeout_ms, uint32_t flags) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd == -1) PERROR("socket");
@@ -525,18 +542,24 @@ bool resolve(RRVec *result, const char *domain, uint16_t qtype, const char *name
         .zones = {0},
     };
 
+    // Load root nameservers in case provided nameserver cannot answer.
+    add_root_zone(&query.zones);
+
     // Create a zone of initial nameservers.
+    in_addr_t ip_addr;
     Zone zone = {
         .domain = "",  // root
         .ns_addresses = {0},
         .ns_domains = {0},
     };
-    if (nameserver_ip != NULL) {
-        in_addr_t ip_addr;
-        if (inet_pton(AF_INET, nameserver_ip, &ip_addr) != 1) ERROR("Invalid IP address: %s", nameserver_ip);
+    if (nameserver == NULL) {
+        load_resolve_config(&zone, true);
+    } else if (inet_pton(AF_INET, nameserver, &ip_addr) == 1) {
         VECTOR_PUSH(&zone.ns_addresses, ip_addr);
     } else {
-        load_resolve_config(&zone, true);
+        char *nameserver_dup = strdup(nameserver);
+        if (nameserver_dup == NULL) OUT_OF_MEMORY();
+        VECTOR_PUSH(&zone.ns_domains, nameserver_dup);
     }
     VECTOR_PUSH(&query.zones, zone);
 
@@ -549,6 +572,6 @@ bool resolve(RRVec *result, const char *domain, uint16_t qtype, const char *name
 }
 
 void free_rr_vec(RRVec *rr_vec) {
-    for (uint32_t i = 0; i < rr_vec->length; i++) free_rr(rr_vec->data[i]);
+    for (uint32_t i = 0; i < rr_vec->length; i++) free_resource_record(rr_vec->data[i]);
     VECTOR_FREE(rr_vec);
 }

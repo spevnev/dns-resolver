@@ -8,15 +8,15 @@
 #include "vector.h"
 
 typedef enum {
-    TYPE_BOOL,
-    TYPE_LONG,
-    TYPE_STR,
+    OPT_BOOL,
+    OPT_LONG,
+    OPT_STRING,
 } OptionType;
 
 typedef union {
     bool bool_;
     long long_;
-    const char *str;
+    const char *string;
 } OptionValue;
 
 typedef struct {
@@ -44,7 +44,7 @@ static Options options = {0};
 
 static void parse_arg(Option *option, char *arg_value) {
     switch (option->type) {
-        case TYPE_BOOL:
+        case OPT_BOOL:
             if (strcasecmp(arg_value, "true") == 0) {
                 option->value.bool_ = true;
             } else if (strcasecmp(arg_value, "false") == 0) {
@@ -53,12 +53,12 @@ static void parse_arg(Option *option, char *arg_value) {
                 ERROR("Invalid option value, expected a boolean but found \"%s\"", arg_value);
             }
             break;
-        case TYPE_LONG: {
+        case OPT_LONG: {
             char *end = NULL;
             option->value.long_ = strtol(arg_value, &end, 10);
             if (*end != '\0') ERROR("Invalid option value, expected a number but found \"%s\"", arg_value);
         } break;
-        case TYPE_STR: option->value.str = arg_value; break;
+        case OPT_STRING: option->value.string = arg_value; break;
     }
 }
 
@@ -75,14 +75,14 @@ static Option *new_option(char short_name, const char *name, const char *descrip
 
 bool *option_bool(char short_name, const char *name, const char *description, bool show_default, bool default_value) {
     Option *option = new_option(short_name, name, description, show_default);
-    option->type = TYPE_BOOL;
+    option->type = OPT_BOOL;
     option->default_value.bool_ = option->value.bool_ = default_value;
     return &option->value.bool_;
 }
 
 long *option_long(char short_name, const char *name, const char *description, bool show_default, long default_value) {
     Option *option = new_option(short_name, name, description, show_default);
-    option->type = TYPE_LONG;
+    option->type = OPT_LONG;
     option->default_value.long_ = option->value.long_ = default_value;
     return &option->value.long_;
 }
@@ -90,9 +90,9 @@ long *option_long(char short_name, const char *name, const char *description, bo
 const char **option_str(char short_name, const char *name, const char *description, bool show_default,
                         const char *default_value) {
     Option *option = new_option(short_name, name, description, show_default);
-    option->type = TYPE_STR;
-    option->default_value.str = option->value.str = default_value;
-    return &option->value.str;
+    option->type = OPT_STRING;
+    option->default_value.string = option->value.string = default_value;
+    return &option->value.string;
 }
 
 void print_options(void) {
@@ -120,9 +120,9 @@ void print_options(void) {
 
         printf(", default=");
         switch (option->type) {
-            case TYPE_BOOL: printf(option->default_value.bool_ ? "true" : "false"); break;
-            case TYPE_LONG: printf("%ld", option->default_value.long_); break;
-            case TYPE_STR:  printf("%s", option->default_value.str); break;
+            case OPT_BOOL:   printf(option->default_value.bool_ ? "true" : "false"); break;
+            case OPT_LONG:   printf("%ld", option->default_value.long_); break;
+            case OPT_STRING: printf("%s", option->default_value.string); break;
         }
         printf("\n");
     }
@@ -153,7 +153,7 @@ char *parse_args(int argc, char **argv) {
                 }
 
                 // -O v
-                if (option->type != TYPE_BOOL) {
+                if (option->type != OPT_BOOL) {
                     if (argc == 0) ERROR("Option \"%s\" requires argument", arg);
                     parse_arg(option, SHIFT_ARGS());
                     found = true;
@@ -180,7 +180,7 @@ char *parse_args(int argc, char **argv) {
                 size_t name_len = strlen(option->name);
 
                 // --no-opt
-                if (option->type == TYPE_BOOL && arg_name_len > 3 && strncmp(arg_name, "no-", 3) == 0
+                if (option->type == OPT_BOOL && arg_name_len > 3 && strncmp(arg_name, "no-", 3) == 0
                     && strcmp(arg_name + 3, option->name) == 0) {
                     option->value.bool_ = false;
                     found = true;
@@ -201,7 +201,7 @@ char *parse_args(int argc, char **argv) {
                 if (arg_name[name_len] != '\0') continue;
 
                 // --opt v
-                if (option->type != TYPE_BOOL) {
+                if (option->type != OPT_BOOL) {
                     if (argc == 0) ERROR("Option \"%s\" requires argument", arg);
                     parse_arg(option, SHIFT_ARGS());
                     found = true;
