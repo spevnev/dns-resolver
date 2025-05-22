@@ -1,8 +1,8 @@
 #!/bin/bash
 
-reset="\e[0m"
-red="\e[1;31m"
-green="\e[1;32m"
+RESET="\e[0m"
+RED="\e[1;31m"
+GREEN="\e[1;32m"
 
 named_dir=./build/named
 named_conf_path=./tests/named.conf
@@ -14,6 +14,15 @@ cases_src_dir=./tests/cases
 cases_out_dir=./build/tests/cases
 
 set -e -o pipefail
+
+# Check executables
+executables=(named named-checkzone)
+for executable in "${executables[@]}"; do
+    if [ ! -x "$(command -v $executable)" ]; then
+        echo "[ERROR] $executable is not installed"
+        exit 1
+    fi
+done
 
 # Create zone file
 mkdir -p $named_dir
@@ -46,10 +55,10 @@ for test in $(find $cases_out_dir -type f -executable); do
 
     $test
     if [ $? -eq 0 ]; then
-        echo -e $green"[PASSED] $test_name"$reset
+        echo -e $GREEN"[PASSED] $test_name"$RESET
         ((passed += 1))
     else
-        echo -e $red"[FAILED] $test_name"$reset
+        echo -e $RED"[FAILED] $test_name"$RESET
         ((failed += 1))
     fi
 done
