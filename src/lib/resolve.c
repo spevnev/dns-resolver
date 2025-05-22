@@ -61,7 +61,7 @@ static bool is_whitespace(char ch) { return ch == ' ' || ch == '\t'; }
 
 static void load_resolve_config(Zone *zone) {
     FILE *fp = fopen(RESOLV_CONF_PATH, "r");
-    if (fp == NULL) ERROR("Failed to open %s", RESOLV_CONF_PATH);
+    if (fp == NULL) FATAL("Failed to open %s", RESOLV_CONF_PATH);
 
     bool found = false;
     char *line = NULL;
@@ -87,10 +87,10 @@ static void load_resolve_config(Zone *zone) {
             found = true;
             VECTOR_PUSH(&zone->nameserver_addrs, ip_addr);
         } else {
-            ERROR("Invalid nameserver address in %s", RESOLV_CONF_PATH);
+            FATAL("Invalid nameserver address in %s", RESOLV_CONF_PATH);
         }
     }
-    if (!feof(fp)) ERROR("Failed to read %s: %s", RESOLV_CONF_PATH, strerror(errno));
+    if (!feof(fp)) FATAL("Failed to read %s: %s", RESOLV_CONF_PATH, strerror(errno));
     free(line);
     fclose(fp);
 
@@ -108,13 +108,13 @@ static void set_timeout(int fd, uint64_t timeout_ns) {
         .tv_sec = timeout_ns / NS_IN_SEC,
         .tv_usec = (timeout_ns % NS_IN_SEC) / NS_IN_US,
     };
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) PERROR("setsockopt");
-    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) PERROR("setsockopt");
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) FATAL_ERRNO("setsockopt");
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) FATAL_ERRNO("setsockopt");
 }
 
 static uint64_t get_time_ns(void) {
     struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) PERROR("clock_gettime");
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) FATAL_ERRNO("clock_gettime");
     return ts.tv_sec * NS_IN_SEC + ts.tv_nsec;
 }
 
@@ -285,12 +285,12 @@ static bool follow_cnames(RRVec *result, RRVec rrs, char sname[static DOMAIN_SIZ
 }
 
 static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_t qtype, bool is_subquery) {
-    if (domain == NULL) ERROR("Domain is null");
+    if (domain == NULL) FATAL("Domain is null");
 
     size_t domain_len = strlen(domain);
     if (domain[domain_len - 1] == '.') domain_len--;
-    if (domain_len > 0 && domain[domain_len - 1] == '.') ERROR("Invalid domain name, multiple trailing dots");
-    if (domain_len > MAX_DOMAIN_LENGTH) ERROR("Invalid domain name, maximum length is %d", MAX_DOMAIN_LENGTH);
+    if (domain_len > 0 && domain[domain_len - 1] == '.') FATAL("Invalid domain name, multiple trailing dots");
+    if (domain_len > MAX_DOMAIN_LENGTH) FATAL("Invalid domain name, maximum length is %d", MAX_DOMAIN_LENGTH);
 
     char sname[DOMAIN_SIZE];
     memcpy(sname, domain, domain_len);
@@ -315,7 +315,9 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
         if (query->verbose) {
             printf("\n");
 
-            if (inet_ntop(AF_INET, &nameserver_ip_addr, addr_buffer, sizeof(addr_buffer)) == NULL) PERROR("inet_ntop");
+            if (inet_ntop(AF_INET, &nameserver_ip_addr, addr_buffer, sizeof(addr_buffer)) == NULL) {
+                FATAL_ERRNO("inet_ntop");
+            }
             printf("Resolving %s using %s (%s).\n", sname, addr_buffer, nameserver_zone->domain);
         }
 
@@ -334,7 +336,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                 remove_nameserver(query, zone_index, nameserver_index);
                 continue;
             } else {
-                PERROR("sendto");
+                FATAL_ERRNO("sendto");
             }
         }
 
@@ -347,7 +349,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                 remove_nameserver(query, zone_index, nameserver_index);
                 continue;
             } else {
-                PERROR("recvfrom");
+                FATAL_ERRNO("recvfrom");
             }
         }
 
@@ -358,12 +360,12 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
             .length = response_length,
         };
         DNSHeader response_header = read_response_header(&response, id);
-        if (response_header.is_truncated) ERROR("Response is truncated");
+        if (response_header.is_truncated) FATAL("Response is truncated");
 
         switch (response_header.rcode) {
             case RCODE_SUCCESS: break;
             case RCODE_NAME_ERROR:
-                if (!response_header.is_authoritative) ERROR("Name error");
+                if (!response_header.is_authoritative) FATAL("Name error");
                 if (query->verbose && is_subquery) printf("Domain name does not exist.\n");
                 found = true;
                 continue;
@@ -383,7 +385,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                 if (query->verbose) fprintf(stderr, "Nameserver refused to answer.\n");
                 remove_nameserver(query, zone_index, nameserver_index);
                 continue;
-            default: ERROR("Invalid or unsupported response code %d", response_header.rcode);
+            default: FATAL("Invalid or unsupported response code %d", response_header.rcode);
         }
 
         validate_question(&response, qtype, sname);
@@ -444,7 +446,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
 
                         memcpy(authority_zone.domain, rr->domain, strlen(rr->domain) + 1);
                     } else if (strcasecmp(authority_zone.domain, rr->domain) != 0) {
-                        ERROR("Authority section should refer to a single zone but found many");
+                        FATAL("Authority section should refer to a single zone but found many");
                     }
 
                     char *domain = strdup(rr->type == TYPE_NS ? rr->data.domain : rr->data.soa.master_name);
@@ -494,7 +496,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                 free_rr(rr);
             }
 
-            if (!query->enable_edns && has_opt) ERROR("Nameserver sent OPT although EDNS is disabled");
+            if (!query->enable_edns && has_opt) FATAL("Nameserver sent OPT although EDNS is disabled");
             if (query->enable_edns && !has_opt) {
                 if (query->verbose) fprintf(stderr, "Nameserver does not support EDNS.\n");
                 remove_nameserver(query, zone_index, nameserver_index);
@@ -509,7 +511,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                     remove_nameserver(query, zone_index, nameserver_index);
                     free_zone(&authority_zone);
                     continue;
-                default: ERROR("Invalid or unsupported response code %d", extended_rcode);
+                default: FATAL("Invalid or unsupported response code %d", extended_rcode);
             }
 
             VECTOR_PUSH(&query->zones, authority_zone);
@@ -524,7 +526,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
 bool resolve(RRVec *result, const char *domain, uint16_t qtype, const char *nameserver, uint16_t port,
              uint64_t timeout_ms, uint32_t flags) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd == -1) PERROR("socket");
+    if (fd == -1) FATAL_ERRNO("socket");
 
     srand(time(NULL));
 

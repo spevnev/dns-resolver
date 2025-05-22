@@ -51,7 +51,7 @@ static void parse_arg(Option *option, char *arg_value) {
             } else if (strcasecmp(arg_value, "false") == 0) {
                 option->value.bool_ = false;
             } else {
-                ERROR("Invalid option value, expected a boolean but found \"%s\"", arg_value);
+                FATAL("Invalid option value, expected a boolean but found \"%s\"", arg_value);
             }
             break;
         case OPT_LONG: {
@@ -60,13 +60,13 @@ static void parse_arg(Option *option, char *arg_value) {
             option->value.long_ = strtol(arg_value, &end, 10);
             if (errno == ERANGE) {
                 if (option->value.long_ == LONG_MAX) {
-                    ERROR("Option value overflow: %s is greater than %ld", arg_value, LONG_MAX);
+                    FATAL("Option value overflow: %s is greater than %ld", arg_value, LONG_MAX);
                 }
                 if (option->value.long_ == LONG_MIN) {
-                    ERROR("Option value underflow: %s is less than %ld", arg_value, LONG_MIN);
+                    FATAL("Option value underflow: %s is less than %ld", arg_value, LONG_MIN);
                 }
             }
-            if (*end != '\0') ERROR("Invalid option value, expected a number but found \"%s\"", arg_value);
+            if (*end != '\0') FATAL("Invalid option value, expected a number but found \"%s\"", arg_value);
         } break;
         case OPT_STRING: option->value.string = arg_value; break;
     }
@@ -141,7 +141,7 @@ void print_options(void) {
 char *parse_args(int argc, char **argv) {
     options.args = argv;
 
-    if (argc == 0) ERROR("Invalid arguments");
+    if (argc == 0) FATAL("Invalid arguments");
     char *program = SHIFT_ARGS();
 
     while (argc > 0) {
@@ -164,7 +164,7 @@ char *parse_args(int argc, char **argv) {
 
                 // -O v
                 if (option->type != OPT_BOOL) {
-                    if (argc == 0) ERROR("Option \"%s\" requires argument", arg);
+                    if (argc == 0) FATAL("Option \"%s\" requires argument", arg);
                     parse_arg(option, SHIFT_ARGS());
                     found = true;
                     break;
@@ -180,7 +180,7 @@ char *parse_args(int argc, char **argv) {
                 found = true;
                 break;
             }
-            if (!found) ERROR("Invalid option \"%s\"", arg);
+            if (!found) FATAL("Invalid option \"%s\"", arg);
         } else if (arg_len >= 3 && arg[0] == '-' && arg[1] == '-') {
             char *arg_name = arg + 2;
             size_t arg_name_len = arg_len - 2;
@@ -212,7 +212,7 @@ char *parse_args(int argc, char **argv) {
 
                 // --opt v
                 if (option->type != OPT_BOOL) {
-                    if (argc == 0) ERROR("Option \"%s\" requires argument", arg);
+                    if (argc == 0) FATAL("Option \"%s\" requires argument", arg);
                     parse_arg(option, SHIFT_ARGS());
                     found = true;
                     break;
@@ -228,7 +228,7 @@ char *parse_args(int argc, char **argv) {
                 found = true;
                 break;
             }
-            if (!found) ERROR("Invalid option \"%s\"", arg);
+            if (!found) FATAL("Invalid option \"%s\"", arg);
         } else {
             // Move all non-option arguments towards beginning of argv.
             options.args[options.args_length++] = arg;

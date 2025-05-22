@@ -32,13 +32,13 @@ int main(int argc, char **argv) {
 
     // Validate options.
     uint16_t qtype = str_to_qtype(*qtype_str);
-    if (*timeout_s <= 0) ERROR("Timeout must be a positive integer");
-    if (*port <= 0 || *port > UINT16_MAX) ERROR("Port must be between 1 and 65535");
+    if (*timeout_s <= 0) FATAL("Timeout must be a positive integer");
+    if (*port <= 0 || *port > UINT16_MAX) FATAL("Port must be between 1 and 65535");
 
     // Validate arguments.
-    if (!has_next_arg()) ERROR("Invalid arguments, domain is not specified");
+    if (!has_next_arg()) FATAL("Invalid arguments, domain is not specified");
     const char *domain = next_arg();
-    if (has_next_arg()) ERROR("Expected one argument (domain) but found \"%s\" and \"%s\"", domain, next_arg());
+    if (has_next_arg()) FATAL("Expected one argument (domain) but found \"%s\" and \"%s\"", domain, next_arg());
 
     uint32_t flags = 0;
     if (!*recursion_desired) flags |= RESOLVE_DISABLE_RDFLAG;
