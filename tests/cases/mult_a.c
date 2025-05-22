@@ -15,11 +15,11 @@ int main(void) {
     bool found2 = false;
     bool found3 = false;
     for (uint32_t i = 0; i < result.length; i++) {
-        ResourceRecord *rr = result.data[i];
+        RR *rr = result.data[i];
         ASSERT(rr->type == TYPE_A);
-        if (rr->data.ip4_address == get_ip4("1.1.1.1")) found1 = true;
-        if (rr->data.ip4_address == get_ip4("2.2.2.2")) found2 = true;
-        if (rr->data.ip4_address == get_ip4("3.3.3.3")) found3 = true;
+        if (rr->data.ip4_addr == get_ip4("1.1.1.1")) found1 = true;
+        if (rr->data.ip4_addr == get_ip4("2.2.2.2")) found2 = true;
+        if (rr->data.ip4_addr == get_ip4("3.3.3.3")) found3 = true;
     }
     ASSERT(found1 && found2 && found3);
 

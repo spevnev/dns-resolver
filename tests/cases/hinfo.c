@@ -9,7 +9,7 @@ int main(void) {
     ASSERT(found);
 
     ASSERT(result.length == 1);
-    ResourceRecord *rr = result.data[0];
+    RR *rr = result.data[0];
     ASSERT(rr->type == TYPE_HINFO);
     ASSERT(strcmp(rr->data.hinfo.cpu, "cpu") == 0);
     ASSERT(strcmp(rr->data.hinfo.os, "os") == 0);

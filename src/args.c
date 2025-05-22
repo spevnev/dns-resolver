@@ -1,5 +1,6 @@
 #include "args.h"
 #include <assert.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -55,7 +56,16 @@ static void parse_arg(Option *option, char *arg_value) {
             break;
         case OPT_LONG: {
             char *end = NULL;
+            errno = 0;
             option->value.long_ = strtol(arg_value, &end, 10);
+            if (errno == ERANGE) {
+                if (option->value.long_ == LONG_MAX) {
+                    ERROR("Option value overflow: %s is greater than %ld", arg_value, LONG_MAX);
+                }
+                if (option->value.long_ == LONG_MIN) {
+                    ERROR("Option value underflow: %s is less than %ld", arg_value, LONG_MIN);
+                }
+            }
             if (*end != '\0') ERROR("Invalid option value, expected a number but found \"%s\"", arg_value);
         } break;
         case OPT_STRING: option->value.string = arg_value; break;

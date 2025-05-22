@@ -9,11 +9,11 @@ int main(void) {
     ASSERT(found);
 
     ASSERT(result.length == 1);
-    ResourceRecord *rr = result.data[0];
+    RR *rr = result.data[0];
     ASSERT(rr->type == TYPE_AAAA);
 
-    struct in6_addr ip = get_ip6("1:2:3:4::");
-    ASSERT(memcmp(&rr->data.ip6_address, &ip, sizeof(struct in6_addr)) == 0);
+    struct in6_addr addr = get_ip6("1:2:3:4::");
+    ASSERT(memcmp(&rr->data.ip6_addr, &addr, sizeof(struct in6_addr)) == 0);
 
     free_rr_vec(&result);
     return EXIT_SUCCESS;

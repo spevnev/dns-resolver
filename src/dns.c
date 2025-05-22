@@ -1,7 +1,6 @@
 #include "dns.h"
 #include <arpa/inet.h>
 #include <assert.h>
-#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -11,7 +10,7 @@
 #include "error.h"
 #include "vector.h"
 
-const char *ROOT_NAMESERVER_IPS[ROOT_NAMESERVERS_LENGTH] = {
+const char *ROOT_NAMESERVER_IP_ADDRS[ROOT_NAMESERVER_COUNT] = {
     "198.41.0.4",    "170.247.170.2", "192.33.4.12",   "199.7.91.13",  "192.203.230.10", "192.5.5.241",  "192.112.36.4",
     "198.97.190.53", "192.36.148.17", "192.58.128.30", "193.0.14.129", "199.7.83.42",    "202.12.27.33",
 };
@@ -43,18 +42,18 @@ static void write_domain(Request *request, const char *domain) {
     }
 
     const char *start = domain;
-    const char *ch = domain;
+    const char *cur = domain;
     for (;;) {
-        if (*ch == '.' || *ch == '\0') {
-            uint8_t len = ch - start;
+        if (*cur == '.' || *cur == '\0') {
+            uint8_t len = cur - start;
             write_u8(request, len);
             if (request->length + len > request->size) ERROR("Request buffer is too small");
             memcpy(request->buffer + request->length, start, len);
             request->length += len;
-            start = ch + 1;
+            start = cur + 1;
         }
-        if (*ch == '\0') break;
-        ch++;
+        if (*cur == '\0') break;
+        cur++;
     }
     write_u8(request, 0);  // end of labels
 }
@@ -91,7 +90,7 @@ static void read_domain_rec(Response *response, char *domain, int domain_size) {
         return;
     }
 
-    char *domain_ptr = domain;
+    char *cur = domain;
     for (;;) {
         uint8_t byte = read_u8(response);
         uint8_t type = byte & LABEL_TYPE_MASK;
@@ -101,26 +100,26 @@ static void read_domain_rec(Response *response, char *domain, int domain_size) {
             uint8_t label_len = data;
             if (label_len == 0) {
                 // End of domain, remove trailing dot and break.
-                assert(domain_ptr > domain);  // check underflow
-                *(domain_ptr - 1) = '\0';
+                assert(cur > domain);  // check underflow
+                *(cur - 1) = '\0';
                 break;
             }
             if (response->current + label_len > response->length) ERROR("Response is too short");
             if (label_len + 1 > domain_size) ERROR("Domain is too long");
             domain_size -= label_len + 1;
 
-            memcpy(domain_ptr, response->buffer + response->current, label_len);
+            memcpy(cur, response->buffer + response->current, label_len);
             response->current += label_len;
-            domain_ptr += label_len;
-            *(domain_ptr++) = '.';
+            cur += label_len;
+            *(cur++) = '.';
         } else if (type == LABEL_TYPE_POINTER) {
             uint16_t offset = (data << 8) | read_u8(response);
-            Response ptr_response = {
+            Response pointer_response = {
                 .buffer = response->buffer,
                 .current = offset,
                 .length = response->length,
             };
-            read_domain_rec(&ptr_response, domain_ptr, domain_size);
+            read_domain_rec(&pointer_response, cur, domain_size);
             // Pointer is always the last part of domain.
             break;
         } else {
@@ -199,18 +198,18 @@ const char *type_to_str(uint16_t type) {
     }
 }
 
-void print_resource_record(ResourceRecord *rr) {
+void print_rr(RR *rr) {
     printf("%-24s %-8u %-6s ", rr->domain[0] == '\0' ? "." : rr->domain, rr->ttl, type_to_str(rr->type));
     switch (rr->type) {
         case TYPE_A: {
             char buffer[INET_ADDRSTRLEN];
-            if (inet_ntop(AF_INET, &rr->data.ip4_address, buffer, sizeof(buffer)) == NULL) PERROR("inet_ntop");
+            if (inet_ntop(AF_INET, &rr->data.ip4_addr, buffer, sizeof(buffer)) == NULL) PERROR("inet_ntop");
             printf("%s", buffer);
         } break;
         case TYPE_NS:
         case TYPE_CNAME: printf("%s", rr->data.domain); break;
         case TYPE_SOA:
-            printf("%s %s %u %u %u %u %u", rr->data.soa.master_name, rr->data.soa.responsible_name, rr->data.soa.serial,
+            printf("%s %s %u %u %u %u %u", rr->data.soa.master_name, rr->data.soa.rname, rr->data.soa.serial,
                    rr->data.soa.refresh, rr->data.soa.retry, rr->data.soa.expire, rr->data.soa.negative_ttl);
             break;
         case TYPE_HINFO: printf("%s %s", rr->data.hinfo.cpu, rr->data.hinfo.os); break;
@@ -219,12 +218,33 @@ void print_resource_record(ResourceRecord *rr) {
             break;
         case TYPE_AAAA: {
             char buffer[INET6_ADDRSTRLEN];
-            if (inet_ntop(AF_INET6, &rr->data.ip6_address, buffer, sizeof(buffer)) == NULL) PERROR("inet_ntop");
+            if (inet_ntop(AF_INET6, &rr->data.ip6_addr, buffer, sizeof(buffer)) == NULL) PERROR("inet_ntop");
             printf("%s", buffer);
         } break;
         default: ERROR("Invalid or unsupported query type %u", rr->type);
     }
     printf("\n");
+}
+
+void free_rr(RR *rr) {
+    switch (rr->type) {
+        case TYPE_A:
+        case TYPE_NS:
+        case TYPE_CNAME:
+        case TYPE_SOA:
+        case TYPE_AAAA:
+        case TYPE_OPT:   break;
+        case TYPE_HINFO:
+            free(rr->data.hinfo.cpu);
+            free(rr->data.hinfo.os);
+            break;
+        case TYPE_TXT:
+            free(rr->data.txt.buffer);
+            VECTOR_FREE(&rr->data.txt);
+            break;
+        default: ERROR("Invalid or unsupported resource record type %d", rr->type);
+    }
+    free(rr);
 }
 
 uint16_t write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
@@ -239,7 +259,7 @@ uint16_t write_request(Request *request, bool recursion_desired, const char *dom
         .is_authoritative = false,
         .opcode = OPCODE_QUERY,
         .is_response = false,
-        .response_code = 0,
+        .rcode = 0,
         .checking_disabled = false,
         .authentic_data = false,
         ._reserved = 0,
@@ -267,7 +287,7 @@ uint16_t write_request(Request *request, bool recursion_desired, const char *dom
         write_u16(request, MAX(udp_payload_size, STANDARD_UDP_PAYLOAD_SIZE));
 
         // TTL contains additional OPT fields.
-        OPTTTLFields opt_fields = {
+        OptTtlFields opt_fields = {
             .extended_rcode = 0,
             .version = EDNS_VERSION,
             ._reserved = 0,
@@ -318,8 +338,8 @@ void validate_question(Response *response, uint16_t request_qtype, const char *r
     if (qclass != CLASS_IN) ERROR("Resource record class is not Internet");
 }
 
-ResourceRecord *read_resource_record(Response *response) {
-    ResourceRecord *rr = malloc(sizeof(*rr));
+RR *read_rr(Response *response) {
+    RR *rr = malloc(sizeof(*rr));
     if (rr == NULL) OUT_OF_MEMORY();
 
     read_domain(response, rr->domain);
@@ -340,15 +360,15 @@ ResourceRecord *read_resource_record(Response *response) {
 
     switch (rr->type) {
         case TYPE_A:
-            if (data_length != sizeof(rr->data.ip4_address)) ERROR("Invalid A data length");
-            memcpy(&rr->data.ip4_address, response->buffer + response->current, sizeof(rr->data.ip4_address));
-            response->current += sizeof(rr->data.ip4_address);
+            if (data_length != sizeof(rr->data.ip4_addr)) ERROR("Invalid A data length");
+            memcpy(&rr->data.ip4_addr, response->buffer + response->current, sizeof(rr->data.ip4_addr));
+            response->current += sizeof(rr->data.ip4_addr);
             break;
         case TYPE_NS:
         case TYPE_CNAME: read_domain(response, rr->data.domain); break;
         case TYPE_SOA:   {
             read_domain(response, rr->data.soa.master_name);
-            read_domain(response, rr->data.soa.responsible_name);
+            read_domain(response, rr->data.soa.rname);
             rr->data.soa.serial = read_u32(response);
             rr->data.soa.refresh = read_u32(response);
             rr->data.soa.retry = read_u32(response);
@@ -361,9 +381,9 @@ ResourceRecord *read_resource_record(Response *response) {
             break;
         case TYPE_TXT: rr->data.txt = read_txt_data(response, data_length); break;
         case TYPE_AAAA:
-            if (data_length != sizeof(rr->data.ip6_address)) ERROR("Invalid AAAA data length");
-            memcpy(&rr->data.ip6_address, response->buffer + response->current, sizeof(rr->data.ip6_address));
-            response->current += sizeof(rr->data.ip6_address);
+            if (data_length != sizeof(rr->data.ip6_addr)) ERROR("Invalid AAAA data length");
+            memcpy(&rr->data.ip6_addr, response->buffer + response->current, sizeof(rr->data.ip6_addr));
+            response->current += sizeof(rr->data.ip6_addr);
             break;
         case TYPE_OPT: {
             if (rr->domain[0] != 0) ERROR("OPT domain must be root");
@@ -371,7 +391,7 @@ ResourceRecord *read_resource_record(Response *response) {
             rr->data.opt.udp_payload_size = MAX(class, STANDARD_UDP_PAYLOAD_SIZE);
 
             uint32_t net_ttl = htonl(rr->ttl);
-            OPTTTLFields opt_fields;
+            OptTtlFields opt_fields;
             memcpy(&opt_fields, &net_ttl, sizeof(opt_fields));
 
             rr->data.opt.extended_rcode = opt_fields.extended_rcode;
@@ -384,25 +404,4 @@ ResourceRecord *read_resource_record(Response *response) {
     }
 
     return rr;
-}
-
-void free_resource_record(ResourceRecord *rr) {
-    switch (rr->type) {
-        case TYPE_A:
-        case TYPE_NS:
-        case TYPE_CNAME:
-        case TYPE_SOA:
-        case TYPE_AAAA:
-        case TYPE_OPT:   break;
-        case TYPE_HINFO:
-            free(rr->data.hinfo.cpu);
-            free(rr->data.hinfo.os);
-            break;
-        case TYPE_TXT:
-            free(rr->data.txt.buffer);
-            VECTOR_FREE(&rr->data.txt);
-            break;
-        default: ERROR("Invalid or unsupported resource record type %d", rr->type);
-    }
-    free(rr);
 }

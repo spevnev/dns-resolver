@@ -49,7 +49,7 @@ int main(int argc, char **argv) {
 
         // Start search from one of the root nameservers.
         if (*nameserver != NULL) printf("Ignoring provided nameserver because trace is enabled.\n");
-        *nameserver = ROOT_NAMESERVER_IPS[rand() % ROOT_NAMESERVERS_LENGTH];
+        *nameserver = ROOT_NAMESERVER_IP_ADDRS[rand() % ROOT_NAMESERVER_COUNT];
     }
 
     RRVec result = {0};
@@ -60,7 +60,7 @@ int main(int argc, char **argv) {
         printf("Domain name does not exist.\n");
     } else {
         printf("Answer:\n");
-        for (uint32_t i = 0; i < result.length; i++) print_resource_record(result.data[i]);
+        for (uint32_t i = 0; i < result.length; i++) print_rr(result.data[i]);
     }
 
     free_rr_vec(&result);

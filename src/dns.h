@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include "vector.h"
 
-#define ROOT_NAMESERVERS_LENGTH 13
-extern const char *ROOT_NAMESERVER_IPS[ROOT_NAMESERVERS_LENGTH];
+#define ROOT_NAMESERVER_COUNT 13
+extern const char *ROOT_NAMESERVER_IP_ADDRS[ROOT_NAMESERVER_COUNT];
 
 #define DNS_PORT 53
 
@@ -53,7 +53,7 @@ typedef struct {
     uint8_t is_authoritative : 1;
     uint8_t opcode : 4;
     uint8_t is_response : 1;
-    uint8_t response_code : 4;
+    uint8_t rcode : 4;
     uint8_t checking_disabled : 1;
     uint8_t authentic_data : 1;
     uint8_t _reserved : 1;
@@ -79,18 +79,18 @@ typedef struct {
     uint8_t _reserved : 7;
     uint8_t dnssec_ok : 1;
     uint8_t _reserved2 : 8;
-} OPTTTLFields;
+} OptTtlFields;
 
 typedef struct {
     char domain[DOMAIN_SIZE];
     uint16_t type;
     uint32_t ttl;
     union {
-        in_addr_t ip4_address;
+        in_addr_t ip4_addr;
         char domain[DOMAIN_SIZE];
         struct {
             char master_name[DOMAIN_SIZE];
-            char responsible_name[DOMAIN_SIZE];
+            char rname[DOMAIN_SIZE];
             uint32_t serial;
             uint32_t refresh;
             uint32_t retry;
@@ -102,15 +102,15 @@ typedef struct {
             char *os;
         } hinfo;
         TXT txt;
-        struct in6_addr ip6_address;
+        struct in6_addr ip6_addr;
         struct {
             uint16_t udp_payload_size;
             uint8_t extended_rcode;
         } opt;
     } data;
-} ResourceRecord;
+} RR;
 
-VECTOR_TYPEDEF(RRVec, ResourceRecord *);
+VECTOR_TYPEDEF(RRVec, RR *);
 
 typedef struct {
     uint8_t *buffer;
@@ -127,14 +127,14 @@ typedef struct {
 uint16_t str_to_qtype(const char *str);
 const char *type_to_str(uint16_t type);
 
-void print_resource_record(ResourceRecord *rr);
-void free_resource_record(ResourceRecord *rr);
+void print_rr(RR *rr);
+void free_rr(RR *rr);
 
 uint16_t write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
                        uint16_t udp_payload_size);
 
 DNSHeader read_response_header(Response *response, uint16_t request_id);
 void validate_question(Response *response, uint16_t request_qtype, const char *request_domain);
-ResourceRecord *read_resource_record(Response *response);
+RR *read_rr(Response *response);
 
 #endif  // DNS_H

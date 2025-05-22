@@ -9,9 +9,9 @@ int main(void) {
     ASSERT(found);
 
     ASSERT(result.length == 1);
-    ResourceRecord *rr = result.data[0];
+    RR *rr = result.data[0];
     ASSERT(rr->type == TYPE_A);
-    ASSERT(rr->data.ip4_address == get_ip4("1.2.3.4"));
+    ASSERT(rr->data.ip4_addr == get_ip4("1.2.3.4"));
     ASSERT(rr->ttl == 123456);
 
     free_rr_vec(&result);

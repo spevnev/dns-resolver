@@ -9,7 +9,7 @@ int main(void) {
     ASSERT(found);
 
     ASSERT(result.length == 1);
-    ResourceRecord *rr = result.data[0];
+    RR *rr = result.data[0];
     ASSERT(rr->type == TYPE_CNAME);
     ASSERT(strcmp(rr->data.domain, "result.cname." TEST_DOMAIN) == 0);
 
