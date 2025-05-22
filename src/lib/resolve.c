@@ -357,7 +357,6 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
             .current = 0,
             .length = response_length,
         };
-
         DNSHeader response_header = read_response_header(&response, id);
         if (response_header.is_truncated) ERROR("Response is truncated");
 
