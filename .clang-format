@@ -1,21 +1,15 @@
 BasedOnStyle: Google
-AccessModifierOffset: -4
-AlignTrailingComments: true
-AllowAllParametersOfDeclarationOnNextLine: false
-AlwaysBreakTemplateDeclarations: No
-BreakBeforeBraces: Attach
 ColumnLimit: 120
-ConstructorInitializerAllOnOneLineOrOnePerLine: true
-IncludeBlocks: Merge
 IndentWidth: 4
+InsertNewlineAtEOF: true
+IncludeBlocks: Merge
+SpaceAfterCStyleCast: true
 BreakBeforeBinaryOperators: All
 BreakBeforeTernaryOperators: true
-SpaceAfterCStyleCast: true
-SpaceBeforeRangeBasedForLoopColon: true
 AllowShortIfStatementsOnASingleLine: AllIfsAndElse
-InsertNewlineAtEOF: true
 AllowShortCaseLabelsOnASingleLine: true
 AlignConsecutiveShortCaseStatements:
   Enabled: true
+AlignTrailingComments: true
 DerivePointerAlignment: false
 PointerAlignment: Right
