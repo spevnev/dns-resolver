@@ -183,7 +183,7 @@ static void free_zone(Zone *zone) {
     VECTOR_FREE(&zone->nameserver_domains);
 }
 
-static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_t qtype);
+static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_t qtype, bool is_subquery);
 
 static bool choose_nameserver(size_t *zone_index, size_t *nameserver_index, Query *query, const char *sname) {
     for (;;) {
@@ -205,7 +205,7 @@ static bool choose_nameserver(size_t *zone_index, size_t *nameserver_index, Quer
 
                 zone->is_being_resolved = true;
                 RRVec nameserver_addrs = {0};
-                bool found = resolve_rec(&nameserver_addrs, query, nameserver_domain, TYPE_A);
+                bool found = resolve_rec(&nameserver_addrs, query, nameserver_domain, TYPE_A, true);
                 zone->is_being_resolved = false;
 
                 // If removed before resolving, zone might get empty and be deleted.
@@ -284,7 +284,7 @@ static bool follow_cnames(RRVec *result, RRVec rrs, char sname[static DOMAIN_SIZ
     return found;
 }
 
-static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_t qtype) {
+static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_t qtype, bool is_subquery) {
     if (domain == NULL) ERROR("Domain is null");
 
     size_t domain_len = strlen(domain);
@@ -365,6 +365,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
             case RCODE_SUCCESS: break;
             case RCODE_NAME_ERROR:
                 if (!response_header.is_authoritative) ERROR("Name error");
+                if (query->verbose && is_subquery) printf("Domain name does not exist.\n");
                 found = true;
                 continue;
             case RCODE_FORMAT_ERROR:
@@ -431,7 +432,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                 RR *rr = read_rr(&response);
                 if (query->verbose) print_rr(rr);
 
-                if (rr->type == TYPE_NS) {
+                if (rr->type == TYPE_NS || rr->type == TYPE_SOA) {
                     if (!zone_has_domain) {
                         zone_has_domain = true;
 
@@ -447,7 +448,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                         ERROR("Authority section should refer to a single zone but found many");
                     }
 
-                    char *domain = strdup(rr->data.domain);
+                    char *domain = strdup(rr->type == TYPE_NS ? rr->data.domain : rr->data.soa.master_name);
                     if (domain == NULL) OUT_OF_MEMORY();
                     VECTOR_PUSH(&authority_zone.nameserver_domains, domain);
                 }
@@ -515,7 +516,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
             VECTOR_PUSH(&query->zones, authority_zone);
         }
     }
-    if (query->verbose) printf("\n");
+    if (query->verbose && is_subquery && !found) printf("Failed to resolve the domain.\n");
 
     free_rr_vec(&prev_rrs);
     return found;
@@ -566,7 +567,7 @@ bool resolve(RRVec *result, const char *domain, uint16_t qtype, const char *name
     }
     VECTOR_PUSH(&query.zones, zone);
 
-    bool found = resolve_rec(result, &query, domain, qtype);
+    bool found = resolve_rec(result, &query, domain, qtype, false);
 
     for (uint32_t i = 0; i < query.zones.length; i++) free_zone(&query.zones.data[i]);
     VECTOR_FREE(&query.zones);

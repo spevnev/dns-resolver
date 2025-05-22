@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include "dns.h"
 #include <arpa/inet.h>
 #include <assert.h>
@@ -128,8 +129,13 @@ static void read_domain_rec(Response *response, char *domain, int domain_size) {
     }
 }
 
-static void read_domain(Response *response, char domain[static DOMAIN_SIZE]) {
-    read_domain_rec(response, domain, DOMAIN_SIZE);
+static char *read_domain(Response *response) {
+    char buffer[DOMAIN_SIZE];
+    read_domain_rec(response, buffer, DOMAIN_SIZE);
+
+    char *domain = strdup(buffer);
+    if (domain == NULL) OUT_OF_MEMORY();
+    return domain;
 }
 
 static char *read_char_string(Response *response) {
@@ -229,11 +235,14 @@ void print_rr(RR *rr) {
 void free_rr(RR *rr) {
     switch (rr->type) {
         case TYPE_A:
-        case TYPE_NS:
-        case TYPE_CNAME:
-        case TYPE_SOA:
         case TYPE_AAAA:
         case TYPE_OPT:   break;
+        case TYPE_NS:
+        case TYPE_CNAME: free(rr->data.domain); break;
+        case TYPE_SOA:
+            free(rr->data.soa.master_name);
+            free(rr->data.soa.rname);
+            break;
         case TYPE_HINFO:
             free(rr->data.hinfo.cpu);
             free(rr->data.hinfo.os);
@@ -244,6 +253,7 @@ void free_rr(RR *rr) {
             break;
         default: ERROR("Invalid or unsupported resource record type %d", rr->type);
     }
+    free(rr->domain);
     free(rr);
 }
 
@@ -327,9 +337,9 @@ DNSHeader read_response_header(Response *response, uint16_t request_id) {
 }
 
 void validate_question(Response *response, uint16_t request_qtype, const char *request_domain) {
-    char domain[DOMAIN_SIZE];
-    read_domain(response, domain);
+    char *domain = read_domain(response);
     if (strcasecmp(domain, request_domain) != 0) ERROR("Invalid domain in response");
+    free(domain);
 
     uint16_t qtype = read_u16(response);
     if (qtype != request_qtype) ERROR("Invalid response question type");
@@ -342,8 +352,7 @@ RR *read_rr(Response *response) {
     RR *rr = malloc(sizeof(*rr));
     if (rr == NULL) OUT_OF_MEMORY();
 
-    read_domain(response, rr->domain);
-
+    rr->domain = read_domain(response);
     rr->type = read_u16(response);
     uint16_t class = read_u16(response);
     rr->ttl = read_u32(response);
@@ -365,16 +374,16 @@ RR *read_rr(Response *response) {
             response->current += sizeof(rr->data.ip4_addr);
             break;
         case TYPE_NS:
-        case TYPE_CNAME: read_domain(response, rr->data.domain); break;
-        case TYPE_SOA:   {
-            read_domain(response, rr->data.soa.master_name);
-            read_domain(response, rr->data.soa.rname);
+        case TYPE_CNAME: rr->data.domain = read_domain(response); break;
+        case TYPE_SOA:
+            rr->data.soa.master_name = read_domain(response);
+            rr->data.soa.rname = read_domain(response);
             rr->data.soa.serial = read_u32(response);
             rr->data.soa.refresh = read_u32(response);
             rr->data.soa.retry = read_u32(response);
             rr->data.soa.expire = read_u32(response);
             rr->data.soa.negative_ttl = read_u32(response);
-        } break;
+            break;
         case TYPE_HINFO:
             rr->data.hinfo.cpu = read_char_string(response);
             rr->data.hinfo.os = read_char_string(response);

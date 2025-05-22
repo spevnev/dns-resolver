@@ -82,15 +82,15 @@ typedef struct {
 } OptTtlFields;
 
 typedef struct {
-    char domain[DOMAIN_SIZE];
+    char *domain;
     uint16_t type;
     uint32_t ttl;
     union {
         in_addr_t ip4_addr;
-        char domain[DOMAIN_SIZE];
+        char *domain;
         struct {
-            char master_name[DOMAIN_SIZE];
-            char rname[DOMAIN_SIZE];
+            char *master_name;
+            char *rname;
             uint32_t serial;
             uint32_t refresh;
             uint32_t retry;
