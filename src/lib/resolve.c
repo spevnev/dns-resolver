@@ -252,7 +252,7 @@ static void remove_nameserver(Query *query, size_t zone_index, size_t nameserver
 static bool is_subdomain(const char *subdomain, const char *domain) {
     size_t subdomain_length = strlen(subdomain);
     size_t domain_length = strlen(domain);
-    if (subdomain_length <= domain_length) return false;
+    if (subdomain_length < domain_length) return false;
 
     size_t subdomain_prefix_length = subdomain_length - domain_length;
     return strcasecmp(subdomain + subdomain_prefix_length, domain) == 0;
@@ -390,6 +390,12 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
 
         validate_question(&response, qtype, sname);
 
+        // No answer and no referral, remove the nameserver.
+        if (response_header.answer_count == 0 && response_header.authority_count == 0) {
+            remove_nameserver(query, zone_index, nameserver_index);
+            continue;
+        }
+
         if (response_header.answer_count > 0) {
             if (query->verbose) printf("Answer section:\n");
 
@@ -464,7 +470,9 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
             for (uint16_t i = 0; i < response_header.additional_count; i++) {
                 RR *rr = read_rr(&response);
                 if (rr->type == TYPE_OPT) {
+                    if (has_opt) FATAL("Multiple OPT RRs in additional section");
                     has_opt = true;
+
                     extended_rcode = (((uint16_t) rr->data.opt.extended_rcode) << 4) | response_header.rcode;
                     free_rr(rr);
                     continue;
@@ -514,7 +522,9 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                 default: FATAL("Invalid or unsupported response code %d", extended_rcode);
             }
 
-            VECTOR_PUSH(&query->zones, authority_zone);
+            if (authority_zone.nameserver_addrs.length > 0 || authority_zone.nameserver_domains.length > 0) {
+                VECTOR_PUSH(&query->zones, authority_zone);
+            }
         }
     }
     if (query->verbose && is_subquery && !found) printf("Failed to resolve the domain.\n");

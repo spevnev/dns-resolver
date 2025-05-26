@@ -32,7 +32,7 @@ echo -e "\n$zone_entries" >> $zone_file_path
 
 # Check zone file, and print output on error
 set +e
-output=$(named-checkzone $zone_name $zone_file_path)
+output=$(named-checkzone -k fail $zone_name $zone_file_path)
 if [ $? -ne 0 ]; then
     echo "$output"
     exit 1
