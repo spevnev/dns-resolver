@@ -5,18 +5,19 @@ RED="\e[1;31m"
 GREEN="\e[1;32m"
 
 named_dir=./build/named
-named_conf_path=./tests/named.conf
 named_pid_path=$named_dir/named.pid
-zone_base_path=./tests/test.zone.base
 zone_file_path=$named_dir/test.zone
+named_conf_path=./tests/bind/named.conf
+zone_base_path=./tests/bind/test.zone.base
 zone_name=test.com
-cases_src_dir=./tests/cases
+
+bind_cases_src_dir=./tests/cases/bind
 cases_out_dir=./build/tests/cases
 
 set -e -o pipefail
 
 # Check executables
-executables=(named named-checkzone)
+executables=(named named-checkzone awk sed)
 for executable in "${executables[@]}"; do
     if [ ! -x "$(command -v $executable)" ]; then
         echo "[ERROR] $executable is not installed"
@@ -27,7 +28,7 @@ done
 # Create zone file
 mkdir -p $named_dir
 cp $zone_base_path $zone_file_path
-zone_entries=$(grep -r "///" $cases_src_dir | sed -re 's/(\S+):\s*\/{3} (.+)/\2 ; \1/')
+zone_entries=$(grep -r "///" $bind_cases_src_dir | sed -re 's/(\S+):\s*\/{3} (.+)/\2 ; \1/')
 echo -e "\n$zone_entries" >> $zone_file_path
 
 # Check zone file, and print output on error
@@ -51,7 +52,7 @@ passed=0
 failed=0
 for test in $(find $cases_out_dir -type f -executable); do
     # Remove common path
-    test_name=$(echo $test | cut -c $((${#cases_out_dir}+2))-)
+    test_name=$(echo $test | awk -F/ '{print $NF}')
 
     $test
     if [ $? -eq 0 ]; then
