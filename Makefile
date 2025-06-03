@@ -84,7 +84,7 @@ $(MOCK_CASES_OUT_DIR)/%: $(MOCK_CASES_OUT_DIR)/%.o $(TEST_COMMON_OBJS) $(TEST_MO
 
 $(MOCK_CASES_OUT_DIR)/%.o: $(MOCK_CASES_DIR)/%.c
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) $(DEBUG_CFLAGS) -I $(TEST_COMMON_DIR) -o $@ -c $<
+	$(CC) $(CFLAGS) $(DEBUG_CFLAGS) -I $(TEST_COMMON_DIR) -I $(TEST_MOCK_DIR) -o $@ -c $<
 
 $(TEST_MOCK_OBJ_DIR)/%.o: %.c
 	@mkdir -p $(@D)
