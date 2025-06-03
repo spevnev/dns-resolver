@@ -8,7 +8,6 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/random.h>
-#include "error.h"
 #include "vector.h"
 
 const char *ROOT_NAMESERVER_IP_ADDRS[ROOT_NAMESERVER_COUNT] = {
@@ -23,32 +22,31 @@ static const uint8_t LABEL_TYPE_NORMAL = 0;     // 00000000
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
-static void write_u8(Request *request, uint8_t value) {
-    if (request->length + sizeof(value) > request->size) FATAL("Request buffer is too small");
+static bool write_u8(Request *request, uint8_t value) {
+    if (request->length + sizeof(value) > request->size) return false;
     request->buffer[request->length++] = value;
+    return true;
 }
 
-static void write_u16(Request *request, uint16_t value) {
-    if (request->length + sizeof(value) > request->size) FATAL("Request buffer is too small");
+static bool write_u16(Request *request, uint16_t value) {
+    if (request->length + sizeof(value) > request->size) return false;
     uint16_t net_value = htons(value);
     memcpy(request->buffer + request->length, &net_value, sizeof(net_value));
     request->length += sizeof(net_value);
+    return true;
 }
 
-static void write_domain(Request *request, const char *domain) {
+static bool write_domain(Request *request, const char *domain) {
     // Check root domain.
-    if (domain[0] == '\0') {
-        write_u8(request, 0);
-        return;
-    }
+    if (domain[0] == '\0') return write_u8(request, 0);
 
     const char *start = domain;
     const char *cur = domain;
     for (;;) {
         if (*cur == '.' || *cur == '\0') {
             uint8_t len = cur - start;
-            write_u8(request, len);
-            if (request->length + len > request->size) FATAL("Request buffer is too small");
+            if (!write_u8(request, len)) return false;
+            if (request->length + len > request->size) return false;
             memcpy(request->buffer + request->length, start, len);
             request->length += len;
             start = cur + 1;
@@ -56,44 +54,48 @@ static void write_domain(Request *request, const char *domain) {
         if (*cur == '\0') break;
         cur++;
     }
-    write_u8(request, 0);  // end of labels
+    if (!write_u8(request, 0)) return false;
+
+    return true;
 }
 
-static uint8_t read_u8(Response *response) {
-    uint8_t value;
-    if (response->current + sizeof(value) > response->length) FATAL("Response is too short");
-    value = response->buffer[response->current];
-    response->current += sizeof(value);
-    return value;
+static bool read_u8(Response *response, uint8_t *out) {
+    if (response->current + sizeof(*out) > response->length) return false;
+    *out = response->buffer[response->current];
+    response->current += sizeof(*out);
+    return true;
 }
 
-static uint16_t read_u16(Response *response) {
+static bool read_u16(Response *response, uint16_t *out) {
     uint16_t value;
-    if (response->current + sizeof(value) > response->length) FATAL("Response is too short");
+    if (response->current + sizeof(value) > response->length) return false;
     memcpy(&value, response->current + response->buffer, sizeof(value));
     response->current += sizeof(value);
-    return ntohs(value);
+    *out = ntohs(value);
+    return true;
 }
 
-static uint32_t read_u32(Response *response) {
+static bool read_u32(Response *response, uint32_t *out) {
     uint32_t value;
-    if (response->current + sizeof(value) > response->length) FATAL("Response is too short");
+    if (response->current + sizeof(value) > response->length) return false;
     memcpy(&value, response->current + response->buffer, sizeof(value));
     response->current += sizeof(value);
-    return ntohl(value);
+    *out = ntohl(value);
+    return true;
 }
 
-static void read_domain_rec(Response *response, char *domain, int domain_size) {
+static bool read_domain_rec(Response *response, char *domain, int domain_size) {
     // Check root domain.
     if (response->buffer[response->current] == 0) {
         *domain = '\0';
         response->current++;
-        return;
+        return true;
     }
 
     char *cur = domain;
     for (;;) {
-        uint8_t byte = read_u8(response);
+        uint8_t byte;
+        if (!read_u8(response, &byte)) return false;
         uint8_t type = byte & LABEL_TYPE_MASK;
         uint8_t data = byte & LABEL_DATA_MASK;
 
@@ -103,10 +105,10 @@ static void read_domain_rec(Response *response, char *domain, int domain_size) {
                 // End of domain, remove trailing dot and break.
                 assert(cur > domain);  // check underflow
                 *(cur - 1) = '\0';
-                break;
+                return true;
             }
-            if (response->current + label_len > response->length) FATAL("Response is too short");
-            if (label_len + 1 > domain_size) FATAL("Domain is too long");
+            if (response->current + label_len > response->length) return false;
+            if (label_len + 1 > domain_size) return false;
             domain_size -= label_len + 1;
 
             memcpy(cur, response->buffer + response->current, label_len);
@@ -114,84 +116,75 @@ static void read_domain_rec(Response *response, char *domain, int domain_size) {
             cur += label_len;
             *(cur++) = '.';
         } else if (type == LABEL_TYPE_POINTER) {
-            uint16_t offset = (data << 8) | read_u8(response);
+            uint8_t lower_half;
+            if (!read_u8(response, &lower_half)) return false;
+            uint16_t offset = ((uint16_t) data << 8) | lower_half;
+
             Response pointer_response = {
                 .buffer = response->buffer,
                 .current = offset,
                 .length = response->length,
             };
-            read_domain_rec(&pointer_response, cur, domain_size);
-            // Pointer is always the last part of domain.
-            break;
+            return read_domain_rec(&pointer_response, cur, domain_size);
         } else {
-            FATAL("Invalid label length type");
+            return false;
         }
     }
 }
 
-static char *read_domain(Response *response) {
+static bool read_domain(Response *response, char **domain_out) {
     char buffer[DOMAIN_SIZE];
-    read_domain_rec(response, buffer, DOMAIN_SIZE);
+    if (!read_domain_rec(response, buffer, DOMAIN_SIZE)) return false;
 
     char *domain = strdup(buffer);
-    if (domain == NULL) OUT_OF_MEMORY();
-    return domain;
+    if (domain == NULL) return false;
+
+    *domain_out = domain;
+    return true;
 }
 
-static char *read_char_string(Response *response) {
-    uint8_t length = read_u8(response);
-    if (response->current + length > response->length) FATAL("Response is too short");
+static bool read_char_string(Response *response, char **string_out) {
+    uint8_t length;
+    if (!read_u8(response, &length)) return false;
+    if (response->current + length > response->length) return false;
 
     char *string = malloc((length + 1) * sizeof(*string));
-    if (string == NULL) OUT_OF_MEMORY();
+    if (string == NULL) return false;
 
     memcpy(string, response->buffer + response->current, length);
     response->current += length;
     string[length] = '\0';
 
-    return string;
+    *string_out = string;
+    return true;
 }
 
 // Copies the data (excluding first length byte) into buffer and replaces each
 // length byte with '\0' to transform it into array of null-terminated strings.
 // TXT's data is a dynamic array of strings pointing to the buffer.
-static TXT read_txt_data(Response *response, uint16_t data_length) {
-    TXT txt = {0};
+static bool read_txt_data(Response *response, uint16_t data_length, TXT *txt) {
+    txt->buffer = malloc(data_length * sizeof(*txt->buffer));
+    if (txt->buffer == NULL) return false;
+    memcpy(txt->buffer, response->buffer + response->current + 1, data_length - 1);
+    txt->buffer[data_length - 1] = '\0';
 
-    txt.buffer = malloc(data_length * sizeof(*txt.buffer));
-    if (txt.buffer == NULL) OUT_OF_MEMORY();
-    memcpy(txt.buffer, response->buffer + response->current + 1, data_length - 1);
-    txt.buffer[data_length - 1] = '\0';
-
-    char *cur = txt.buffer;
+    char *cur = txt->buffer;
     uint32_t end = response->current + data_length;
     while (response->current < end) {
-        uint8_t length = read_u8(response);
+        uint8_t length;
+        if (!read_u8(response, &length)) return false;
 
-        if (response->current + length > response->length) FATAL("Response is too short");
+        if (response->current + length > response->length) return false;
         response->current += length;
 
-        VECTOR_PUSH(&txt, cur);
+        VECTOR_PUSH(txt, cur);
         cur += length;
         *(cur++) = '\0';
     }
-
-    return txt;
+    return true;
 }
 
-uint16_t str_to_qtype(const char *str) {
-    if (strcasecmp(str, "A") == 0) return TYPE_A;
-    if (strcasecmp(str, "NS") == 0) return TYPE_NS;
-    if (strcasecmp(str, "CNAME") == 0) return TYPE_CNAME;
-    if (strcasecmp(str, "SOA") == 0) return TYPE_SOA;
-    if (strcasecmp(str, "HINFO") == 0) return TYPE_HINFO;
-    if (strcasecmp(str, "TXT") == 0) return TYPE_TXT;
-    if (strcasecmp(str, "AAAA") == 0) return TYPE_AAAA;
-    if (strcasecmp(str, "ANY") == 0) return QTYPE_ANY;
-    FATAL("Invalid or unsupported qtype \"%s\"", str);
-}
-
-const char *type_to_str(uint16_t type) {
+static const char *type_to_str(uint16_t type) {
     switch (type) {
         case TYPE_A:     return "A";
         case TYPE_NS:    return "NS";
@@ -200,7 +193,7 @@ const char *type_to_str(uint16_t type) {
         case TYPE_HINFO: return "HINFO";
         case TYPE_TXT:   return "TXT";
         case TYPE_AAAA:  return "AAAA";
-        default:         FATAL("Invalid or unsupported resource record type %u", type);
+        default:         return "unknown";
     }
 }
 
@@ -208,9 +201,12 @@ void print_rr(RR *rr) {
     printf("%-24s %-8u %-6s ", rr->domain[0] == '\0' ? "." : rr->domain, rr->ttl, type_to_str(rr->type));
     switch (rr->type) {
         case TYPE_A: {
-            char buffer[INET_ADDRSTRLEN];
-            if (inet_ntop(AF_INET, &rr->data.ip4_addr, buffer, sizeof(buffer)) == NULL) FATAL_ERRNO("inet_ntop");
-            printf("%s", buffer);
+            char addr_buffer[INET_ADDRSTRLEN];
+            if (inet_ntop(AF_INET, &rr->data.ip4_addr, addr_buffer, sizeof(addr_buffer)) == NULL) {
+                printf("invalid address");
+            } else {
+                printf("%s", addr_buffer);
+            }
         } break;
         case TYPE_NS:
         case TYPE_CNAME: printf("%s", rr->data.domain); break;
@@ -223,11 +219,13 @@ void print_rr(RR *rr) {
             for (uint32_t i = 0; i < rr->data.txt.length; i++) printf(" \"%s\"", rr->data.txt.data[i]);
             break;
         case TYPE_AAAA: {
-            char buffer[INET6_ADDRSTRLEN];
-            if (inet_ntop(AF_INET6, &rr->data.ip6_addr, buffer, sizeof(buffer)) == NULL) FATAL_ERRNO("inet_ntop");
-            printf("%s", buffer);
+            char addr_buffer[INET6_ADDRSTRLEN];
+            if (inet_ntop(AF_INET6, &rr->data.ip6_addr, addr_buffer, sizeof(addr_buffer)) == NULL) {
+                printf("invalid address");
+            } else {
+                printf("%s", addr_buffer);
+            }
         } break;
-        default: FATAL("Invalid or unsupported query type %u", rr->type);
     }
     printf("\n");
 }
@@ -251,19 +249,17 @@ void free_rr(RR *rr) {
             free(rr->data.txt.buffer);
             VECTOR_FREE(&rr->data.txt);
             break;
-        default: FATAL("Invalid or unsupported resource record type %d", rr->type);
     }
     free(rr->domain);
     free(rr);
 }
 
-uint16_t write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
-                       uint16_t udp_payload_size) {
-    uint16_t id;
-    if (getrandom(&id, sizeof(id), 0) != sizeof(id)) FATAL_ERRNO("getrandom");
+bool write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
+                   uint16_t udp_payload_size, uint16_t *request_id) {
+    if (getrandom(request_id, sizeof(*request_id), 0) != sizeof(*request_id)) return false;
 
     DNSHeader header = {
-        .id = htons(id),
+        .id = htons(*request_id),
         .recursion_desired = recursion_desired,
         .is_truncated = false,
         .is_authoritative = false,
@@ -279,22 +275,22 @@ uint16_t write_request(Request *request, bool recursion_desired, const char *dom
         .authority_count = 0,
         .additional_count = enable_edns ? htons(1) : 0,
     };
-    if (request->length + sizeof(header) > request->size) FATAL("Request buffer is too small");
+    if (request->length + sizeof(header) > request->size) return false;
     memcpy(request->buffer + request->length, &header, sizeof(header));
     request->length += sizeof(header);
 
     // Write question.
-    write_domain(request, domain);
-    write_u16(request, qtype);
-    write_u16(request, CLASS_IN);
+    if (!write_domain(request, domain)) return false;
+    if (!write_u16(request, qtype)) return false;
+    if (!write_u16(request, CLASS_IN)) return false;
 
     // Write the OPT pseudo-RR (RFC6891):
     if (enable_edns) {
         // Domain must be root.
-        write_u8(request, 0);
-        write_u16(request, TYPE_OPT);
+        if (!write_u8(request, 0)) return false;
+        if (!write_u16(request, TYPE_OPT)) return false;
         // CLASS contains max UDP payload size.
-        write_u16(request, MAX(udp_payload_size, STANDARD_UDP_PAYLOAD_SIZE));
+        if (!write_u16(request, MAX(udp_payload_size, STANDARD_UDP_PAYLOAD_SIZE))) return false;
 
         // TTL contains additional OPT fields.
         OptTtlFields opt_fields = {
@@ -304,98 +300,112 @@ uint16_t write_request(Request *request, bool recursion_desired, const char *dom
             .dnssec_ok = 0,
             ._reserved2 = 0,
         };
-        if (request->length + sizeof(opt_fields) > request->size) FATAL("Request buffer is too small");
+        if (request->length + sizeof(opt_fields) > request->size) return false;
         memcpy(request->buffer + request->length, &opt_fields, sizeof(opt_fields));
         request->length += sizeof(opt_fields);
 
         // No additional options.
-        write_u16(request, 0);
+        if (!write_u16(request, 0)) return false;
     }
 
-    return id;
+    return true;
 }
 
-DNSHeader read_response_header(Response *response, uint16_t request_id) {
-    DNSHeader header;
-    if (response->current + sizeof(header) > response->length) FATAL("Response is too short");
+bool read_response_header(DNSHeader *header, Response *response, uint16_t request_id) {
+    if (response->current + sizeof(*header) > response->length) return false;
+    memcpy(header, response->buffer + response->current, sizeof(*header));
+    response->current += sizeof(*header);
 
-    memcpy(&header, response->buffer + response->current, sizeof(header));
-    response->current += sizeof(header);
+    header->id = ntohs(header->id);
+    header->question_count = ntohs(header->question_count);
+    header->answer_count = ntohs(header->answer_count);
+    header->authority_count = ntohs(header->authority_count);
+    header->additional_count = ntohs(header->additional_count);
 
-    header.id = ntohs(header.id);
-    header.question_count = ntohs(header.question_count);
-    header.answer_count = ntohs(header.answer_count);
-    header.authority_count = ntohs(header.authority_count);
-    header.additional_count = ntohs(header.additional_count);
+    if (!header->is_response) return false;
+    if (header->opcode != OPCODE_QUERY) return false;
+    if (header->id != request_id) return false;
+    if (header->question_count != 1) return false;  // RFC9619
 
-    if (!header.is_response) FATAL("Message is not a response");
-    if (header.opcode != OPCODE_QUERY) FATAL("Invalid response opcode");
-    if (header.id != request_id) FATAL("Response id does not match request id");
-    if (header.question_count != 1) FATAL("Question count is not 1");  // RFC9619
-
-    return header;
+    return true;
 }
 
-void validate_question(Response *response, uint16_t request_qtype, const char *request_domain) {
-    char *domain = read_domain(response);
-    if (strcasecmp(domain, request_domain) != 0) FATAL("Invalid domain in response");
+bool validate_question(Response *response, uint16_t request_qtype, const char *request_domain) {
+    char *domain;
+    if (!read_domain(response, &domain)) return false;
+    if (strcasecmp(domain, request_domain) != 0) return false;
     free(domain);
 
-    uint16_t qtype = read_u16(response);
-    if (qtype != request_qtype) FATAL("Invalid response question type");
+    uint16_t qtype, qclass;
+    if (!read_u16(response, &qtype)) return false;
+    if (!read_u16(response, &qclass)) return false;
 
-    uint16_t qclass = read_u16(response);
-    if (qclass != CLASS_IN) FATAL("Resource record class is not Internet");
+    if (qtype != request_qtype) return false;
+    if (qclass != CLASS_IN) return false;
+
+    return true;
 }
 
 RR *read_rr(Response *response) {
     RR *rr = malloc(sizeof(*rr));
-    if (rr == NULL) OUT_OF_MEMORY();
+    if (rr == NULL) return NULL;
 
-    rr->domain = read_domain(response);
-    rr->type = read_u16(response);
-    uint16_t class = read_u16(response);
-    rr->ttl = read_u32(response);
-    uint16_t data_length = read_u16(response);
-    if (response->current + data_length > response->length) FATAL("Response is too short");
+    uint16_t class, data_length;
+    if (!read_domain(response, &rr->domain)) goto error;
+    if (!read_u16(response, &rr->type)) goto error;
+    if (!read_u16(response, &class)) goto error;
+    if (!read_u32(response, &rr->ttl)) goto error;
+    if (!read_u16(response, &data_length)) goto error;
 
     if (rr->type != TYPE_OPT) {
         // Class must be Internet, or it is OPT RR whose CLASS contains UDP payload size (RFC6891).
-        if (class != CLASS_IN) FATAL("Resource record class is not Internet");
+        if (class != CLASS_IN) goto error;
         // TTL is an unsigned number between 0 and 2147483647 (RFC2181).
         // Treat TTL values with the MBS set as if the value was zero.
         if (rr->ttl > MAX_TTL) rr->ttl = 0;
     }
 
+    if (response->current + data_length > response->length) goto error;
     switch (rr->type) {
         case TYPE_A:
-            if (data_length != sizeof(rr->data.ip4_addr)) FATAL("Invalid A data length");
+            if (data_length != sizeof(rr->data.ip4_addr)) goto error;
             memcpy(&rr->data.ip4_addr, response->buffer + response->current, sizeof(rr->data.ip4_addr));
             response->current += sizeof(rr->data.ip4_addr);
             break;
         case TYPE_NS:
-        case TYPE_CNAME: rr->data.domain = read_domain(response); break;
+        case TYPE_CNAME:
+            if (!read_domain(response, &rr->data.domain)) goto error;
+            break;
         case TYPE_SOA:
-            rr->data.soa.master_name = read_domain(response);
-            rr->data.soa.rname = read_domain(response);
-            rr->data.soa.serial = read_u32(response);
-            rr->data.soa.refresh = read_u32(response);
-            rr->data.soa.retry = read_u32(response);
-            rr->data.soa.expire = read_u32(response);
-            rr->data.soa.negative_ttl = read_u32(response);
+            if (!read_domain(response, &rr->data.soa.master_name)) goto error;
+            if (!read_domain(response, &rr->data.soa.rname)) {
+                free(rr->data.soa.master_name);
+                goto error;
+            }
+            if (!read_u32(response, &rr->data.soa.serial)) goto error;
+            if (!read_u32(response, &rr->data.soa.refresh)) goto error;
+            if (!read_u32(response, &rr->data.soa.retry)) goto error;
+            if (!read_u32(response, &rr->data.soa.expire)) goto error;
+            if (!read_u32(response, &rr->data.soa.negative_ttl)) goto error;
             break;
         case TYPE_HINFO:
-            rr->data.hinfo.cpu = read_char_string(response);
-            rr->data.hinfo.os = read_char_string(response);
+            if (!read_char_string(response, &rr->data.hinfo.cpu)) goto error;
+            if (!read_char_string(response, &rr->data.hinfo.os)) {
+                free(rr->data.hinfo.cpu);
+                goto error;
+            }
             break;
-        case TYPE_TXT: rr->data.txt = read_txt_data(response, data_length); break;
+        case TYPE_TXT:
+            memset(&rr->data.txt, 0, sizeof(rr->data.txt));
+            if (!read_txt_data(response, data_length, &rr->data.txt)) goto error;
+            break;
         case TYPE_AAAA:
-            if (data_length != sizeof(rr->data.ip6_addr)) FATAL("Invalid AAAA data length");
+            if (data_length != sizeof(rr->data.ip6_addr)) goto error;
             memcpy(&rr->data.ip6_addr, response->buffer + response->current, sizeof(rr->data.ip6_addr));
             response->current += sizeof(rr->data.ip6_addr);
             break;
         case TYPE_OPT: {
-            if (rr->domain[0] != 0) FATAL("OPT domain must be root");
+            if (rr->domain[0] != 0) goto error;
 
             rr->data.opt.udp_payload_size = MAX(class, STANDARD_UDP_PAYLOAD_SIZE);
 
@@ -404,13 +414,17 @@ RR *read_rr(Response *response) {
             memcpy(&opt_fields, &net_ttl, sizeof(opt_fields));
 
             rr->data.opt.extended_rcode = opt_fields.extended_rcode;
-            if (opt_fields.version > EDNS_VERSION) FATAL("Unsupported or invalid EDNS version");
+            if (opt_fields.version > EDNS_VERSION) goto error;
 
             // Ignore additional options.
             response->current += data_length;
         } break;
-        default: FATAL("Invalid or unsupported resource record type %d", rr->type);
+        default: goto error;
     }
 
     return rr;
+error:
+    free(rr->domain);
+    free(rr);
+    return NULL;
 }

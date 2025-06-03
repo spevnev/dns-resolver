@@ -2,11 +2,24 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <strings.h>
 #include <time.h>
 #include "args.h"
 #include "dns.h"
 #include "error.h"
 #include "resolve.h"
+
+static uint16_t str_to_qtype(const char *str) {
+    if (strcasecmp(str, "A") == 0) return TYPE_A;
+    if (strcasecmp(str, "NS") == 0) return TYPE_NS;
+    if (strcasecmp(str, "CNAME") == 0) return TYPE_CNAME;
+    if (strcasecmp(str, "SOA") == 0) return TYPE_SOA;
+    if (strcasecmp(str, "HINFO") == 0) return TYPE_HINFO;
+    if (strcasecmp(str, "TXT") == 0) return TYPE_TXT;
+    if (strcasecmp(str, "AAAA") == 0) return TYPE_AAAA;
+    if (strcasecmp(str, "ANY") == 0) return QTYPE_ANY;
+    FATAL("Invalid or unsupported qtype \"%s\"", str);
+}
 
 int main(int argc, char **argv) {
     srand(time(NULL));

@@ -124,17 +124,14 @@ typedef struct {
     uint32_t current;
 } Response;
 
-uint16_t str_to_qtype(const char *str);
-const char *type_to_str(uint16_t type);
-
 void print_rr(RR *rr);
 void free_rr(RR *rr);
 
-uint16_t write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
-                       uint16_t udp_payload_size);
+bool write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
+                   uint16_t udp_payload_size, uint16_t *request_id);
 
-DNSHeader read_response_header(Response *response, uint16_t request_id);
-void validate_question(Response *response, uint16_t request_qtype, const char *request_domain);
+bool read_response_header(DNSHeader *header, Response *response, uint16_t request_id);
+bool validate_question(Response *response, uint16_t request_qtype, const char *request_domain);
 RR *read_rr(Response *response);
 
 #endif  // DNS_H
