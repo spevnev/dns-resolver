@@ -5,7 +5,7 @@
 int main(void) {
     /// aaaa AAAA 1:2:3:4::
     RRVec result = {0};
-    bool found = resolve(&result, "aaaa." TEST_DOMAIN, TYPE_AAAA, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0);
+    bool found = resolve("aaaa." TEST_DOMAIN, TYPE_AAAA, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0, &result);
     ASSERT(found);
 
     ASSERT(result.length == 1);

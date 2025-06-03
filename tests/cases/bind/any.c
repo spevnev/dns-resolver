@@ -7,7 +7,7 @@ int main(void) {
     /// any A 2.2.2.2
     /// any TXT result
     RRVec result = {0};
-    bool found = resolve(&result, "any." TEST_DOMAIN, QTYPE_ANY, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0);
+    bool found = resolve("any." TEST_DOMAIN, QTYPE_ANY, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0, &result);
     ASSERT(found);
     ASSERT(result.length == 3);
 

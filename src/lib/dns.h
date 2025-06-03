@@ -128,10 +128,10 @@ void print_rr(RR *rr);
 void free_rr(RR *rr);
 
 bool write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
-                   uint16_t udp_payload_size, uint16_t *request_id);
+                   uint16_t udp_payload_size, uint16_t *id_out);
 
-bool read_response_header(DNSHeader *header, Response *response, uint16_t request_id);
+bool read_response_header(Response *response, uint16_t request_id, DNSHeader *header_out);
 bool validate_question(Response *response, uint16_t request_qtype, const char *request_domain);
-RR *read_rr(Response *response);
+bool read_rr(Response *response, RR **rr_out);
 
 #endif  // DNS_H

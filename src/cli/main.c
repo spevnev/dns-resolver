@@ -66,7 +66,7 @@ int main(int argc, char **argv) {
     }
 
     RRVec result = {0};
-    bool found = resolve(&result, domain, qtype, *nameserver, *port, *timeout_s * 1000, flags);
+    bool found = resolve(domain, qtype, *nameserver, *port, *timeout_s * 1000, flags, &result);
     if (!found) {
         printf("Failed to resolve the domain.\n");
     } else if (result.length == 0) {

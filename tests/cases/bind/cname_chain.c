@@ -8,7 +8,7 @@ int main(void) {
     /// chain1.cname CNAME result.chain.cname
     /// result.chain.cname A 1.1.1.1
     RRVec result = {0};
-    bool found = resolve(&result, "chain.cname." TEST_DOMAIN, TYPE_A, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0);
+    bool found = resolve("chain.cname." TEST_DOMAIN, TYPE_A, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0, &result);
     ASSERT(found);
 
     ASSERT(result.length == 1);

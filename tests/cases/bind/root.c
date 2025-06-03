@@ -4,7 +4,7 @@
 
 int main(void) {
     RRVec result = {0};
-    bool found = resolve(&result, ".", TYPE_NS, "1.1.1.1", DNS_PORT, 1000, 0);
+    bool found = resolve(".", TYPE_NS, "1.1.1.1", DNS_PORT, 1000, 0, &result);
     ASSERT(found);
 
     ASSERT(result.length == ROOT_NAMESERVER_COUNT);

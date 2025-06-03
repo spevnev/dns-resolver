@@ -5,7 +5,7 @@
 int main(void) {
     /// invalid.ttl 2147483648 A 1.2.3.4
     RRVec result = {0};
-    bool found = resolve(&result, "invalid.ttl." TEST_DOMAIN, TYPE_A, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0);
+    bool found = resolve("invalid.ttl." TEST_DOMAIN, TYPE_A, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0, &result);
     ASSERT(found);
 
     ASSERT(result.length == 1);

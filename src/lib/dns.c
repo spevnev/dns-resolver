@@ -1,7 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "dns.h"
 #include <arpa/inet.h>
-#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -103,7 +102,6 @@ static bool read_domain_rec(Response *response, char *domain, int domain_size) {
             uint8_t label_len = data;
             if (label_len == 0) {
                 // End of domain, remove trailing dot and break.
-                assert(cur > domain);  // check underflow
                 *(cur - 1) = '\0';
                 return true;
             }
@@ -255,11 +253,12 @@ void free_rr(RR *rr) {
 }
 
 bool write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
-                   uint16_t udp_payload_size, uint16_t *request_id) {
-    if (getrandom(request_id, sizeof(*request_id), 0) != sizeof(*request_id)) return false;
+                   uint16_t udp_payload_size, uint16_t *id_out) {
+    uint16_t id;
+    if (getrandom(&id, sizeof(id), 0) != sizeof(id)) return false;
 
     DNSHeader header = {
-        .id = htons(*request_id),
+        .id = htons(id),
         .recursion_desired = recursion_desired,
         .is_truncated = false,
         .is_authoritative = false,
@@ -308,10 +307,11 @@ bool write_request(Request *request, bool recursion_desired, const char *domain,
         if (!write_u16(request, 0)) return false;
     }
 
+    *id_out = id;
     return true;
 }
 
-bool read_response_header(DNSHeader *header, Response *response, uint16_t request_id) {
+bool read_response_header(Response *response, uint16_t request_id, DNSHeader *header) {
     if (response->current + sizeof(*header) > response->length) return false;
     memcpy(header, response->buffer + response->current, sizeof(*header));
     response->current += sizeof(*header);
@@ -346,9 +346,9 @@ bool validate_question(Response *response, uint16_t request_qtype, const char *r
     return true;
 }
 
-RR *read_rr(Response *response) {
+bool read_rr(Response *response, RR **rr_out) {
     RR *rr = malloc(sizeof(*rr));
-    if (rr == NULL) return NULL;
+    if (rr == NULL) return false;
 
     uint16_t class, data_length;
     if (!read_domain(response, &rr->domain)) goto error;
@@ -422,9 +422,10 @@ RR *read_rr(Response *response) {
         default: goto error;
     }
 
-    return rr;
+    *rr_out = rr;
+    return true;
 error:
     free(rr->domain);
     free(rr);
-    return NULL;
+    return false;
 }

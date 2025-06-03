@@ -5,7 +5,7 @@
 int main(void) {
     /// txt TXT result
     RRVec result = {0};
-    bool found = resolve(&result, "txt." TEST_DOMAIN, TYPE_TXT, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0);
+    bool found = resolve("txt." TEST_DOMAIN, TYPE_TXT, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0, &result);
     ASSERT(found);
 
     ASSERT(result.length == 1);

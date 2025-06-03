@@ -5,7 +5,7 @@
 int main(void) {
     /// hinfo HINFO cpu os
     RRVec result = {0};
-    bool found = resolve(&result, "hinfo." TEST_DOMAIN, TYPE_HINFO, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0);
+    bool found = resolve("hinfo." TEST_DOMAIN, TYPE_HINFO, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0, &result);
     ASSERT(found);
 
     ASSERT(result.length == 1);

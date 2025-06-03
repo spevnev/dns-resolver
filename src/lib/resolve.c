@@ -186,9 +186,9 @@ static void free_zone(Zone *zone) {
     VECTOR_FREE(&zone->nameserver_domains);
 }
 
-static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_t qtype, bool is_subquery);
+static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool is_subquery, RRVec *result);
 
-static bool choose_nameserver(size_t *zone_index, size_t *nameserver_index, Query *query, const char *sname) {
+static bool choose_nameserver(Query *query, const char *sname, size_t *zone_index_out, size_t *nameserver_index_out) {
     for (;;) {
         for (int i = query->zones.length - 1; i >= 0; i--) {
             Zone *zone = &query->zones.data[i];
@@ -196,8 +196,8 @@ static bool choose_nameserver(size_t *zone_index, size_t *nameserver_index, Quer
 
             // If there are resolved nameservers, return a random one.
             if (zone->nameserver_addrs.length > 0) {
-                *zone_index = i;
-                *nameserver_index = rand() % zone->nameserver_addrs.length;
+                *zone_index_out = i;
+                *nameserver_index_out = rand() % zone->nameserver_addrs.length;
                 return true;
             }
 
@@ -208,7 +208,7 @@ static bool choose_nameserver(size_t *zone_index, size_t *nameserver_index, Quer
 
                 zone->is_being_resolved = true;
                 RRVec nameserver_addrs = {0};
-                bool found = resolve_rec(&nameserver_addrs, query, nameserver_domain, TYPE_A, true);
+                bool found = resolve_rec(query, nameserver_domain, TYPE_A, true, &nameserver_addrs);
                 zone->is_being_resolved = false;
 
                 // If removed before resolving, zone might get empty and be deleted.
@@ -224,8 +224,8 @@ static bool choose_nameserver(size_t *zone_index, size_t *nameserver_index, Quer
 
                 if (zone->nameserver_addrs.length == 0) continue;
 
-                *zone_index = i;
-                *nameserver_index = rand() % zone->nameserver_addrs.length;
+                *zone_index_out = i;
+                *nameserver_index_out = rand() % zone->nameserver_addrs.length;
                 return true;
             }
 
@@ -261,7 +261,7 @@ static bool is_subdomain(const char *subdomain, const char *domain) {
     return strcasecmp(subdomain + subdomain_prefix_length, domain) == 0;
 }
 
-static bool follow_cnames(RRVec *result, RRVec rrs, char sname[static DOMAIN_SIZE], uint16_t qtype) {
+static bool follow_cnames(RRVec rrs, char sname[static DOMAIN_SIZE], uint16_t qtype, RRVec *result) {
     bool found = false;
     bool restart;
     do {
@@ -287,9 +287,7 @@ static bool follow_cnames(RRVec *result, RRVec rrs, char sname[static DOMAIN_SIZ
     return found;
 }
 
-static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_t qtype, bool is_subquery) {
-    assert(result != NULL && query != NULL && domain != NULL);
-
+static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool is_subquery, RRVec *result) {
     size_t domain_len = strlen(domain);
     if (domain[domain_len - 1] == '.') domain_len--;
     if (domain_len > 0 && domain[domain_len - 1] == '.') {
@@ -319,7 +317,8 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
     DNSHeader response_header = {0};
     size_t nameserver_index;
     size_t zone_index;
-    while (!found && choose_nameserver(&zone_index, &nameserver_index, query, sname)) {
+    RR *rr;
+    while (!found && choose_nameserver(query, sname, &zone_index, &nameserver_index)) {
         Zone *nameserver_zone = &query->zones.data[zone_index];
         in_addr_t nameserver_ip_addr = nameserver_zone->nameserver_addrs.data[nameserver_index];
 
@@ -345,14 +344,14 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
 
         request_addr.sin_addr.s_addr = nameserver_ip_addr;
         if (!udp_send(query, request, request_addr, &timed_out)) {
-            if (query->verbose) fprintf(stderr, "Timeout.\n");
+            if (query->verbose) fprintf(stderr, "Request timeout.\n");
             if (timed_out) break;
             goto nameserver_error;
         }
 
         ssize_t response_length;
         if (!udp_receive(query, buffer, buffer_size, request_addr, &response_length, &timed_out)) {
-            if (query->verbose) fprintf(stderr, "Timeout.\n");
+            if (query->verbose) fprintf(stderr, "Response timeout.\n");
             if (timed_out) break;
             goto nameserver_error;
         }
@@ -363,7 +362,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
             .current = 0,
             .length = response_length,
         };
-        if (!read_response_header(&response_header, &response, id)) {
+        if (!read_response_header(&response, id, &response_header)) {
             if (query->verbose) fprintf(stderr, "Invalid response header.\n");
             goto nameserver_error;
         }
@@ -418,8 +417,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
 
             if (query->verbose) printf("Answer section:\n");
             for (uint16_t i = 0; i < response_header.answer_count; i++) {
-                RR *rr = read_rr(&response);
-                if (rr == NULL) {
+                if (!read_rr(&response, &rr)) {
                     if (query->verbose) fprintf(stderr, "Invalid resource record.\n");
                     goto nameserver_error;
                 }
@@ -440,7 +438,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                     // Change sname to the alias.
                     memcpy(sname, rr->data.domain, strlen(rr->data.domain) + 1);
                     // Check previous RRs.
-                    if (follow_cnames(result, prev_rrs, sname, qtype)) found = true;
+                    if (follow_cnames(prev_rrs, sname, qtype, result)) found = true;
                 }
                 free_rr(rr);
             }
@@ -453,8 +451,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
         if (response_header.authority_count > 0) {
             if (query->verbose) printf("Authority section:\n");
             for (uint16_t i = 0; i < response_header.authority_count; i++) {
-                RR *rr = read_rr(&response);
-                if (rr == NULL) {
+                if (!read_rr(&response, &rr)) {
                     if (query->verbose) fprintf(stderr, "Invalid resource record.\n");
                     goto nameserver_error;
                 }
@@ -491,8 +488,7 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
             bool printed_section = false;
             uint16_t extended_rcode = 0;
             for (uint16_t i = 0; i < response_header.additional_count; i++) {
-                RR *rr = read_rr(&response);
-                if (rr == NULL) {
+                if (!read_rr(&response, &rr)) {
                     if (query->verbose) fprintf(stderr, "Invalid resource record.\n");
                     goto nameserver_error;
                 }
@@ -575,8 +571,8 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
     return found;
 }
 
-bool resolve(RRVec *result, const char *domain, uint16_t qtype, const char *nameserver, uint16_t port,
-             uint64_t timeout_ms, uint32_t flags) {
+bool resolve(const char *domain, uint16_t qtype, const char *nameserver, uint16_t port, uint64_t timeout_ms,
+             uint32_t flags, RRVec *result) {
     if (result == NULL || domain == NULL) return false;
 
     srand(time(NULL));
@@ -624,7 +620,7 @@ bool resolve(RRVec *result, const char *domain, uint16_t qtype, const char *name
     }
     VECTOR_PUSH(&query.zones, zone);
 
-    bool found = resolve_rec(result, &query, domain, qtype, false);
+    bool found = resolve_rec(&query, domain, qtype, false, result);
 
     for (uint32_t i = 0; i < query.zones.length; i++) free_zone(&query.zones.data[i]);
     VECTOR_FREE(&query.zones);
