@@ -292,8 +292,14 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
 
     size_t domain_len = strlen(domain);
     if (domain[domain_len - 1] == '.') domain_len--;
-    if (domain_len > 0 && domain[domain_len - 1] == '.') FATAL("Invalid domain name, multiple trailing dots");
-    if (domain_len > MAX_DOMAIN_LENGTH) FATAL("Invalid domain name, maximum length is %d", MAX_DOMAIN_LENGTH);
+    if (domain_len > 0 && domain[domain_len - 1] == '.') {
+        if (query->verbose) fprintf(stderr, "Invalid domain name, multiple trailing dots.\n");
+        return false;
+    }
+    if (domain_len > MAX_DOMAIN_LENGTH) {
+        if (query->verbose) fprintf(stderr, "Invalid domain name, maximum length is %d.\n", MAX_DOMAIN_LENGTH);
+        return false;
+    }
 
     char sname[DOMAIN_SIZE];
     memcpy(sname, domain, domain_len);
@@ -333,19 +339,20 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
 
         uint16_t id;
         if (!write_request(&request, query->recursion_desired, sname, qtype, query->enable_edns, buffer_size, &id)) {
-            FATAL("Request buffer is too small");
+            if (query->verbose) fprintf(stderr, "Request buffer is too small.\n");
+            return false;
         }
 
         request_addr.sin_addr.s_addr = nameserver_ip_addr;
         if (!udp_send(query, request, request_addr, &timed_out)) {
-            if (query->verbose) printf("Timeout.\n");
+            if (query->verbose) fprintf(stderr, "Timeout.\n");
             if (timed_out) break;
             goto nameserver_error;
         }
 
         ssize_t response_length;
         if (!udp_receive(query, buffer, buffer_size, request_addr, &response_length, &timed_out)) {
-            if (query->verbose) printf("Timeout.\n");
+            if (query->verbose) fprintf(stderr, "Timeout.\n");
             if (timed_out) break;
             goto nameserver_error;
         }
@@ -360,12 +367,15 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
             if (query->verbose) fprintf(stderr, "Invalid response header.\n");
             goto nameserver_error;
         }
-        if (response_header.is_truncated) FATAL("Response is truncated");
+        if (response_header.is_truncated) {
+            if (query->verbose) fprintf(stderr, "Response is truncated.\n");
+            return false;
+        }
 
         switch (response_header.rcode) {
             case RCODE_SUCCESS: break;
             case RCODE_NAME_ERROR:
-                if (!response_header.is_authoritative) FATAL("Name error");
+                if (!response_header.is_authoritative) goto nameserver_error;
                 if (query->verbose && is_subquery) printf("Domain name does not exist.\n");
                 found = true;
                 continue;
@@ -381,7 +391,11 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
             case RCODE_REFUSED:
                 if (query->verbose) fprintf(stderr, "Nameserver refused to answer.\n");
                 goto nameserver_error;
-            default: FATAL("Invalid or unsupported response code %d", response_header.rcode);
+            default:
+                if (query->verbose) {
+                    fprintf(stderr, "Invalid or unsupported response code %d.\n", response_header.rcode);
+                }
+                goto nameserver_error;
         }
 
         if (!validate_question(&response, qtype, sname)) {
@@ -458,7 +472,10 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
 
                         memcpy(authority_zone.domain, rr->domain, strlen(rr->domain) + 1);
                     } else if (strcasecmp(authority_zone.domain, rr->domain) != 0) {
-                        FATAL("Authority section should refer to a single zone but found many");
+                        if (query->verbose) {
+                            fprintf(stderr, "Authority section should refer to a single zone but found many.\n");
+                        }
+                        goto nameserver_error;
                     }
 
                     char *domain = strdup(rr->type == TYPE_NS ? rr->data.domain : rr->data.soa.master_name);
@@ -481,7 +498,10 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                 }
 
                 if (rr->type == TYPE_OPT) {
-                    if (has_opt) FATAL("Multiple OPT RRs in additional section");
+                    if (has_opt) {
+                        if (query->verbose) fprintf(stderr, "Multiple OPT RRs in additional section.\n");
+                        goto nameserver_error;
+                    }
                     has_opt = true;
 
                     extended_rcode = (((uint16_t) rr->data.opt.extended_rcode) << 4) | response_header.rcode;
@@ -515,9 +535,15 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                 free_rr(rr);
             }
 
-            if (!query->enable_edns && has_opt) FATAL("Nameserver sent OPT although EDNS is disabled");
-            if (query->enable_edns && !has_opt) {
-                if (query->verbose) fprintf(stderr, "Nameserver does not support EDNS.\n");
+            // OPT must be sent only when EDNS is enabled.
+            if (query->enable_edns != has_opt) {
+                if (query->verbose) {
+                    if (query->enable_edns) {
+                        fprintf(stderr, "Nameserver does not support EDNS.\n");
+                    } else {
+                        fprintf(stderr, "Nameserver sent OPT although EDNS is disabled.\n");
+                    }
+                }
                 free_zone(&authority_zone);
                 goto nameserver_error;
             }
@@ -528,7 +554,10 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
                     if (query->verbose) fprintf(stderr, "Nameserver does not support EDNS version %d.\n", EDNS_VERSION);
                     free_zone(&authority_zone);
                     goto nameserver_error;
-                default: FATAL("Invalid or unsupported response code %d", extended_rcode);
+                default:
+                    if (query->verbose) fprintf(stderr, "Invalid or unsupported response code %d.\n", extended_rcode);
+                    free_zone(&authority_zone);
+                    goto nameserver_error;
             }
 
             if (authority_zone.nameserver_addrs.length > 0 || authority_zone.nameserver_domains.length > 0) {
@@ -548,17 +577,19 @@ static bool resolve_rec(RRVec *result, Query *query, const char *domain, uint16_
 
 bool resolve(RRVec *result, const char *domain, uint16_t qtype, const char *nameserver, uint16_t port,
              uint64_t timeout_ms, uint32_t flags) {
-    if (result == NULL) FATAL("Result is null");
-    if (domain == NULL) FATAL("Domain is null");
-
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd == -1) FATAL_ERRNO("socket");
+    if (result == NULL || domain == NULL) return false;
 
     srand(time(NULL));
 
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd == -1) return false;
+
     // Timeout to receive/send over UDP.
     uint64_t udp_timeout_ns = MAX(timeout_ms / 5, MIN_QUERY_TIMEOUT_MS) * NS_IN_MS;
-    set_timeout(fd, udp_timeout_ns);
+    if (!set_timeout(fd, udp_timeout_ns)) {
+        close(fd);
+        return false;
+    }
 
     Query query = {
         .fd = fd,
