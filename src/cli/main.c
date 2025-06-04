@@ -33,6 +33,7 @@ int main(int argc, char **argv) {
     bool *recursion_desired = option_bool('r', "rdflag", "set Recursion Desired", true, true);
     bool *enable_edns = option_bool('\0', "edns", "enable EDNS", true, true);
     bool *trace = option_bool('\0', "trace", "trace delegations from the root nameserver", true, false);
+    bool *no_root_ns = option_bool('\0', "no-root", "do not ask root nameservers", true, false);
 
     const char *program = parse_args(argc, argv);
 
@@ -56,6 +57,7 @@ int main(int argc, char **argv) {
     uint32_t flags = 0;
     if (!*recursion_desired) flags |= RESOLVE_DISABLE_RDFLAG;
     if (!*enable_edns) flags |= RESOLVE_DISABLE_EDNS;
+    if (*no_root_ns) flags |= RESOLVE_NO_ROOT_NS;
     if (*verbose) flags |= RESOLVE_VERBOSE;
     if (*trace) {
         flags |= RESOLVE_VERBOSE;

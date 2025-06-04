@@ -5,7 +5,7 @@
 int main(void) {
     /// mult.txt TXT a b c d e
     RRVec result = {0};
-    bool found = resolve("mult.txt." TEST_DOMAIN, TYPE_TXT, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0, &result);
+    bool found = resolve("mult.txt." TEST_DOMAIN, TYPE_TXT, TEST_IP, TEST_PORT, TEST_TIMEOUT, TEST_FLAGS, &result);
     ASSERT(found);
 
     ASSERT(result.length == 1);

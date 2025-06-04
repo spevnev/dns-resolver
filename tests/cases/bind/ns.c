@@ -4,7 +4,7 @@
 
 int main(void) {
     RRVec result = {0};
-    bool found = resolve(TEST_DOMAIN, TYPE_NS, NAMESERVER_IP, NAMESERVER_PORT, 1000, 0, &result);
+    bool found = resolve(TEST_DOMAIN, TYPE_NS, TEST_IP, TEST_PORT, TEST_TIMEOUT, TEST_FLAGS, &result);
     ASSERT(found);
 
     ASSERT(result.length == 2);

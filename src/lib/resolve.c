@@ -270,7 +270,6 @@ static bool follow_cnames(RRVec rrs, char sname[static DOMAIN_SIZE], uint16_t qt
             RR *rr = rrs.data[i];
             if (strcasecmp(rr->domain, sname) != 0) continue;
 
-            // Found it.
             if (rr->type == qtype) {
                 VECTOR_PUSH(result, rr);
                 found = true;
@@ -580,7 +579,6 @@ bool resolve(const char *domain, uint16_t qtype, const char *nameserver, uint16_
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd == -1) return false;
 
-    // Timeout to receive/send over UDP.
     uint64_t udp_timeout_ns = MAX(timeout_ms / 5, MIN_QUERY_TIMEOUT_MS) * NS_IN_MS;
     if (!set_timeout(fd, udp_timeout_ns)) {
         close(fd);

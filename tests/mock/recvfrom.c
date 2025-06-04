@@ -41,10 +41,10 @@ ssize_t recvfrom(int fd, void *buffer, size_t buffer_size, int flags, struct soc
 
     struct sockaddr_in ip_addr = {
         .sin_family = AF_INET,
-        .sin_port = htons(NAMESERVER_PORT),
+        .sin_port = htons(TEST_PORT),
         .sin_zero = {0},
     };
-    int result = inet_pton(AF_INET, NAMESERVER_IP, &ip_addr.sin_addr);
+    int result = inet_pton(AF_INET, TEST_IP, &ip_addr.sin_addr);
     assert(result == 1);
 
     memcpy(addr, &ip_addr, sizeof(ip_addr));

@@ -14,7 +14,7 @@ extern const char *ROOT_NAMESERVER_IP_ADDRS[ROOT_NAMESERVER_COUNT];
 #define MAX_DOMAIN_LENGTH 255
 #define DOMAIN_SIZE (MAX_DOMAIN_LENGTH + 1)
 
-// RFC2181
+// Maximum allowed TTL (RFC2181).
 #define MAX_TTL 2147483647
 
 // Max payload size when using UDP without EDNS (RFC1035).

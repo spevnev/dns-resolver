@@ -101,7 +101,7 @@ static bool read_domain_rec(Response *response, char *domain, int domain_size) {
         if (type == LABEL_TYPE_NORMAL) {
             uint8_t label_len = data;
             if (label_len == 0) {
-                // End of domain, remove trailing dot and break.
+                // End of domain, remove trailing dot.
                 *(cur - 1) = '\0';
                 return true;
             }
