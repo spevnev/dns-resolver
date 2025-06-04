@@ -13,7 +13,7 @@ BIN_PATH := $(OUT_DIR)/$(BIN_NAME)
 CC      := gcc
 CFLAGS  := -O2 -std=c99 -Wall -Wextra -pedantic -I $(LIB_DIR) -MMD -MP
 LDFLAGS :=
-DEBUG_CFLAGS := -g3 -fsanitize=address,leak
+DEBUG_CFLAGS := -g3 -fsanitize=address,leak,undefined
 
 ifeq ($(DEBUG), 1)
 	CFLAGS += $(DEBUG_CFLAGS)
@@ -27,10 +27,13 @@ LIB_SRCS := $(shell find $(LIB_DIR) -type f -name '*.c')
 LIB_OBJS := $(patsubst %.c, $(OUT_DIR)/%.o, $(LIB_SRCS))
 LIB_DEPS := $(patsubst %.o, %.d, $(LIB_OBJS))
 
-TEST_COMMON_OBJ_DIR := $(OUT_DIR)/$(TEST_COMMON_DIR)
 TEST_COMMON_SRCS    := $(shell find $(TEST_COMMON_DIR) -type f -name '*.c') $(LIB_SRCS)
-TEST_COMMON_OBJS    := $(patsubst %.c, $(TEST_COMMON_OBJ_DIR)/%.o, $(TEST_COMMON_SRCS))
-TEST_COMMON_DEPS    := $(patsubst %.o, %.d, $(TEST_COMMON_OBJS))
+BIND_COMMON_OBJ_DIR := $(OUT_DIR)/$(TEST_COMMON_DIR)/bind
+BIND_COMMON_OBJS    := $(patsubst %.c, $(BIND_COMMON_OBJ_DIR)/%.o, $(TEST_COMMON_SRCS))
+BIND_COMMON_DEPS    := $(patsubst %.o, %.d, $(BIND_COMMON_OBJS))
+MOCK_COMMON_OBJ_DIR := $(OUT_DIR)/$(TEST_COMMON_DIR)/mock
+MOCK_COMMON_OBJS    := $(patsubst %.c, $(MOCK_COMMON_OBJ_DIR)/%.o, $(TEST_COMMON_SRCS))
+MOCK_COMMON_DEPS    := $(patsubst %.o, %.d, $(MOCK_COMMON_OBJS))
 
 TEST_MOCK_OBJ_DIR := $(OUT_DIR)/$(TEST_MOCK_DIR)
 TEST_MOCK_SRCS    := $(shell find $(TEST_MOCK_DIR) -type f -name '*.c')
@@ -66,7 +69,7 @@ $(OUT_DIR)/%.o: %.c
 test: $(BIND_CASES) $(MOCK_CASES)
 	@./tests/test.sh
 
-$(BIND_CASES_OUT_DIR)/%: $(BIND_CASES_OUT_DIR)/%.o $(TEST_COMMON_OBJS)
+$(BIND_CASES_OUT_DIR)/%: $(BIND_CASES_OUT_DIR)/%.o $(BIND_COMMON_OBJS)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(DEBUG_CFLAGS) -o $@ $^
 
@@ -74,20 +77,24 @@ $(BIND_CASES_OUT_DIR)/%.o: $(BIND_CASES_DIR)/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(DEBUG_CFLAGS) -I $(TEST_COMMON_DIR) -o $@ -c $<
 
-$(TEST_COMMON_OBJ_DIR)/%.o: %.c
+$(BIND_COMMON_OBJ_DIR)/%.o: %.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(DEBUG_CFLAGS) -o $@ -c $<
 
-$(MOCK_CASES_OUT_DIR)/%: $(MOCK_CASES_OUT_DIR)/%.o $(TEST_COMMON_OBJS) $(TEST_MOCK_OBJS)
+$(MOCK_CASES_OUT_DIR)/%: $(MOCK_CASES_OUT_DIR)/%.o $(TEST_MOCK_OBJS) $(MOCK_COMMON_OBJS)
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) $(DEBUG_CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^
 
 $(MOCK_CASES_OUT_DIR)/%.o: $(MOCK_CASES_DIR)/%.c
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) $(DEBUG_CFLAGS) -I $(TEST_COMMON_DIR) -I $(TEST_MOCK_DIR) -o $@ -c $<
+	$(CC) $(CFLAGS) -I $(TEST_COMMON_DIR) -I $(TEST_MOCK_DIR) -o $@ -c $<
+
+$(MOCK_COMMON_OBJ_DIR)/%.o: %.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(TEST_MOCK_OBJ_DIR)/%.o: %.c
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) $(DEBUG_CFLAGS) -I $(TEST_COMMON_DIR) -o $@ -c $<
+	$(CC) $(CFLAGS) -I $(TEST_COMMON_DIR) -o $@ -c $<
 
--include $(BIN_DEPS) $(LIB_DEPS) $(TEST_COMMON_DEPS) $(TEST_MOCK_DEPS) $(BIND_CASES_DEPS) $(MOCK_CASES_DEPS)
+-include $(BIN_DEPS) $(LIB_DEPS) $(BIND_COMMON_DEPS) $(MOCK_COMMON_DEPS) $(TEST_MOCK_DEPS) $(BIND_CASES_DEPS) $(MOCK_CASES_DEPS)
