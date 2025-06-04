@@ -333,8 +333,10 @@ bool read_response_header(Response *response, uint16_t request_id, DNSHeader *he
 bool validate_question(Response *response, uint16_t request_qtype, const char *request_domain) {
     char *domain;
     if (!read_domain(response, &domain)) return false;
-    if (strcasecmp(domain, request_domain) != 0) return false;
+
+    int result = strcasecmp(domain, request_domain);
     free(domain);
+    if (result != 0) return false;
 
     uint16_t qtype, qclass;
     if (!read_u16(response, &qtype)) return false;
@@ -351,7 +353,10 @@ bool read_rr(Response *response, RR **rr_out) {
     if (rr == NULL) return false;
 
     uint16_t class, data_length;
-    if (!read_domain(response, &rr->domain)) goto error;
+    if (!read_domain(response, &rr->domain)) {
+        free(rr);
+        return false;
+    }
     if (!read_u16(response, &rr->type)) goto error;
     if (!read_u16(response, &class)) goto error;
     if (!read_u32(response, &rr->ttl)) goto error;
@@ -382,11 +387,15 @@ bool read_rr(Response *response, RR **rr_out) {
                 free(rr->data.soa.master_name);
                 goto error;
             }
-            if (!read_u32(response, &rr->data.soa.serial)) goto error;
-            if (!read_u32(response, &rr->data.soa.refresh)) goto error;
-            if (!read_u32(response, &rr->data.soa.retry)) goto error;
-            if (!read_u32(response, &rr->data.soa.expire)) goto error;
-            if (!read_u32(response, &rr->data.soa.negative_ttl)) goto error;
+            if (!read_u32(response, &rr->data.soa.serial) ||   //
+                !read_u32(response, &rr->data.soa.refresh) ||  //
+                !read_u32(response, &rr->data.soa.retry) ||    //
+                !read_u32(response, &rr->data.soa.expire) ||   //
+                !read_u32(response, &rr->data.soa.negative_ttl)) {
+                free(rr->data.soa.master_name);
+                free(rr->data.soa.rname);
+                goto error;
+            }
             break;
         case TYPE_HINFO:
             if (!read_char_string(response, &rr->data.hinfo.cpu)) goto error;
