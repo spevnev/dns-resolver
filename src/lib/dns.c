@@ -116,7 +116,9 @@ static bool read_domain_rec(Response *response, char *domain, int domain_size) {
         } else if (type == LABEL_TYPE_POINTER) {
             uint8_t lower_half;
             if (!read_u8(response, &lower_half)) return false;
+
             uint16_t offset = ((uint16_t) data << 8) | lower_half;
+            if (offset >= response->length) return false;
 
             Response pointer_response = {
                 .buffer = response->buffer,

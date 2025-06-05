@@ -1,0 +1,36 @@
+#include "common.h"
+#include "config.h"
+#include "mock_config.h"
+#include "resolve.h"
+
+static const uint8_t answers[]
+    = {0x4, 0x74, 0x65, 0x73, 0x74, 0x3,  0x63, 0x6f, 0x6d, 0x0,  0x0,  0x6, 0x0,  0x1,  0x0,  0x0,
+       0x0, 0x0,  0x0,  0x32, 0x1,  0x61, 0x4,  0x74, 0x65, 0x73, 0x74, 0x3, 0x63, 0x6f, 0x6d, 0x0,
+       0x1, 0x62, 0x4,  0x74, 0x65, 0x73, 0x74, 0x3,  0x63, 0x6f, 0x6d, 0x0, 0x0,  0x0,  0x0,  0x1,
+       0x0, 0x0,  0x0,  0x2,  0x0,  0x0,  0x0,  0x3,  0x0,  0x0,  0x0,  0x4, 0x0,  0x0,  0x0,  0x5};
+
+MockResponse mock_response = {
+    .answers = answers,
+    .answers_length = sizeof(answers),
+    .answers_count = 1,
+};
+
+int main(void) {
+    RRVec result = {0};
+    bool found = resolve(TEST_DOMAIN, TYPE_SOA, TEST_IP, TEST_PORT, TEST_TIMEOUT, TEST_FLAGS, &result);
+    ASSERT(found);
+
+    ASSERT(result.length == 1);
+    RR *rr = result.data[0];
+    ASSERT(rr->type == TYPE_SOA);
+    ASSERT(strcmp(rr->data.soa.master_name, "a.test.com") == 0);
+    ASSERT(strcmp(rr->data.soa.rname, "b.test.com") == 0);
+    ASSERT(rr->data.soa.serial == 1);
+    ASSERT(rr->data.soa.refresh == 2);
+    ASSERT(rr->data.soa.retry == 3);
+    ASSERT(rr->data.soa.expire == 4);
+    ASSERT(rr->data.soa.negative_ttl == 5);
+
+    free_rr_vec(&result);
+    return EXIT_SUCCESS;
+}

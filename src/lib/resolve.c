@@ -261,16 +261,19 @@ static bool is_subdomain(const char *subdomain, const char *domain) {
     return strcasecmp(subdomain + subdomain_prefix_length, domain) == 0;
 }
 
-static bool follow_cnames(RRVec rrs, char sname[static DOMAIN_SIZE], uint16_t qtype, RRVec *result) {
+static bool follow_cnames(RRVec *rrs, char sname[static DOMAIN_SIZE], uint16_t qtype, RRVec *result) {
     bool found = false;
     bool restart;
     do {
         restart = false;
-        for (uint32_t i = 0; i < rrs.length; i++) {
-            RR *rr = rrs.data[i];
+        for (uint32_t i = 0; i < rrs->length; i++) {
+            RR *rr = rrs->data[i];
             if (strcasecmp(rr->domain, sname) != 0) continue;
 
             if (rr->type == qtype) {
+                VECTOR_REMOVE(rrs, i);
+                i--;
+
                 VECTOR_PUSH(result, rr);
                 found = true;
             }
@@ -415,7 +418,7 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
                     // Change sname to the alias.
                     memcpy(sname, rr->data.domain, strlen(rr->data.domain) + 1);
                     // Check previous RRs.
-                    if (follow_cnames(prev_rrs, sname, qtype, result)) found = true;
+                    if (follow_cnames(&prev_rrs, sname, qtype, result)) found = true;
                 }
                 free_rr(rr);
             }
@@ -518,6 +521,10 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
             if (authority_zone.nameserver_addrs.length > 0 || authority_zone.nameserver_domains.length > 0) {
                 VECTOR_PUSH(&query->zones, authority_zone);
             }
+        } else if (query->enable_edns) {
+            // Response does not have additional sections, and thus no OPT.
+            free_zone(&authority_zone);
+            NAMESERVER_ERROR("Nameserver does not support EDNS.\n");
         }
 
         continue;
