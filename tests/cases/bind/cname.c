@@ -13,6 +13,6 @@ int main(void) {
     ASSERT(rr->type == TYPE_CNAME);
     ASSERT(strcmp(rr->data.domain, "result.cname." TEST_DOMAIN) == 0);
 
-    free_rr_vec(&result);
+    free_rr_vec(result);
     return EXIT_SUCCESS;
 }

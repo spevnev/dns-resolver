@@ -11,6 +11,6 @@ int main(void) {
     ASSERT(result.data[0]->type == TYPE_NS);
     ASSERT(result.data[1]->type == TYPE_NS);
 
-    free_rr_vec(&result);
+    free_rr_vec(result);
     return EXIT_SUCCESS;
 }

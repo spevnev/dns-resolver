@@ -20,6 +20,6 @@ int main(void) {
     ASSERT(strcmp(txt.data[3], "d") == 0);
     ASSERT(strcmp(txt.data[4], "e") == 0);
 
-    free_rr_vec(&result);
+    free_rr_vec(result);
     return EXIT_SUCCESS;
 }

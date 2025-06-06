@@ -13,6 +13,6 @@ int main(void) {
     ASSERT(rr->type == TYPE_A);
     ASSERT(rr->data.ip4_addr == get_ip4("1.2.3.4"));
 
-    free_rr_vec(&result);
+    free_rr_vec(result);
     return EXIT_SUCCESS;
 }

@@ -16,6 +16,6 @@ int main(void) {
     ASSERT(txt.length == 1);
     ASSERT(strcmp(txt.data[0], "result") == 0);
 
-    free_rr_vec(&result);
+    free_rr_vec(result);
     return EXIT_SUCCESS;
 }

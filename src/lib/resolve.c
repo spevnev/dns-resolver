@@ -220,7 +220,7 @@ static bool choose_nameserver(Query *query, const char *sname, size_t *zone_inde
                 for (uint32_t j = 0; j < nameserver_addrs.length; j++) {
                     VECTOR_PUSH(&zone->nameserver_addrs, nameserver_addrs.data[j]->data.ip4_addr);
                 }
-                free_rr_vec(&nameserver_addrs);
+                free_rr_vec(nameserver_addrs);
 
                 if (zone->nameserver_addrs.length == 0) continue;
 
@@ -317,7 +317,7 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
         .sin_port = htons(query->port),
         .sin_zero = {0},
     };
-    uint16_t buffer_size = EDNS_UDP_PAYLOAD_SIZE;
+    uint16_t buffer_size = query->enable_edns ? EDNS_UDP_PAYLOAD_SIZE : STANDARD_UDP_PAYLOAD_SIZE;
     uint8_t buffer[buffer_size];
     char addr_buffer[INET_ADDRSTRLEN];
     RRVec prev_rrs = {0};
@@ -346,7 +346,7 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
         uint16_t id;
         if (!write_request(&request, query->recursion_desired, sname, qtype, query->enable_edns, buffer_size, &id)) {
             if (query->verbose) fprintf(stderr, "Request buffer is too small.\n");
-            free_rr_vec(&prev_rrs);
+            free_rr_vec(prev_rrs);
             return false;
         }
 
@@ -533,7 +533,7 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
     }
     if (query->verbose && is_subquery && !found) printf("Failed to resolve the domain.\n");
 
-    free_rr_vec(&prev_rrs);
+    free_rr_vec(prev_rrs);
     return found;
 
 #undef NAMESERVER_ERROR
@@ -595,7 +595,7 @@ bool resolve(const char *domain, uint16_t qtype, const char *nameserver, uint16_
     return found;
 }
 
-void free_rr_vec(RRVec *rr_vec) {
-    for (uint32_t i = 0; i < rr_vec->length; i++) free_rr(rr_vec->data[i]);
-    VECTOR_FREE(rr_vec);
+void free_rr_vec(RRVec rr_vec) {
+    for (uint32_t i = 0; i < rr_vec.length; i++) free_rr(rr_vec.data[i]);
+    VECTOR_FREE(&rr_vec);
 }

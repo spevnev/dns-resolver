@@ -24,14 +24,6 @@ static size_t get_domain_length(const uint8_t *buffer) {
     return length;
 }
 
-#define COPY(src, src_size, dst, dst_size) \
-    do {                                   \
-        assert(dst_size >= (src_size));    \
-        dst_size -= src_size;              \
-        memcpy(dst, (src), (src_size));    \
-        dst += src_size;                   \
-    } while (0)
-
 ssize_t recvfrom(int fd, void *buffer, size_t buffer_size, int flags, struct sockaddr *addr, socklen_t *addr_len) {
     (void) fd;
     (void) flags;
@@ -79,29 +71,37 @@ ssize_t recvfrom(int fd, void *buffer, size_t buffer_size, int flags, struct soc
 
     uint8_t *current = buffer;
 
-    COPY(&header, sizeof(header), current, buffer_size);
+#define COPY(src, src_size)                                                     \
+    do {                                                                        \
+        if (buffer_size < (src_size)) return initial_buffer_size - buffer_size; \
+        buffer_size -= src_size;                                                \
+        memcpy(current, (src), (src_size));                                     \
+        current += src_size;                                                    \
+    } while (0)
+
+    COPY(&header, sizeof(header));
 
     assert(htons(request_header.question_count) == 1);
     size_t question_size = get_domain_length(current) + sizeof(uint16_t) + sizeof(uint16_t);
     if (copy_questions) {
-        COPY(request_current, question_size, current, buffer_size);
+        COPY(request_current, question_size);
     } else {
-        COPY(mock_response.questions, mock_response.questions_length, current, buffer_size);
+        COPY(mock_response.questions, mock_response.questions_length);
     }
     request_current += question_size;
     assert(request_length >= question_size);
     request_length -= question_size;
 
-    COPY(mock_response.answers, mock_response.answers_length, current, buffer_size);
-    COPY(mock_response.authority, mock_response.authority_length, current, buffer_size);
+    COPY(mock_response.answers, mock_response.answers_length);
+    COPY(mock_response.authority, mock_response.authority_length);
 
     // OPT should come last so copy the remaining part of the request.
     if (!mock_response.disable_copy_opt) {
-        COPY(request_current, request_length, current, buffer_size);
+        COPY(request_current, request_length);
         request_current += request_length;
         request_length = 0;
     }
-    COPY(mock_response.additional, mock_response.additional_length, current, buffer_size);
+    COPY(mock_response.additional, mock_response.additional_length);
 
     return initial_buffer_size - buffer_size;
 }

@@ -8,6 +8,6 @@ int main(void) {
     ASSERT(found);
     ASSERT(result.length == 0);
 
-    free_rr_vec(&result);
+    free_rr_vec(result);
     return EXIT_SUCCESS;
 }

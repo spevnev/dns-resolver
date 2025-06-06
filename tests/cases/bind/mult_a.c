@@ -23,6 +23,6 @@ int main(void) {
     }
     ASSERT(found1 && found2 && found3);
 
-    free_rr_vec(&result);
+    free_rr_vec(result);
     return EXIT_SUCCESS;
 }

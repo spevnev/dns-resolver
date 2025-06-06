@@ -31,6 +31,6 @@ int main(void) {
     ASSERT(rr->data.soa.expire == 4);
     ASSERT(rr->data.soa.negative_ttl == 5);
 
-    free_rr_vec(&result);
+    free_rr_vec(result);
     return EXIT_SUCCESS;
 }

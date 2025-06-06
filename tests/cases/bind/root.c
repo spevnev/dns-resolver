@@ -14,6 +14,6 @@ int main(void) {
         ASSERT(strcmp(rr->data.domain + 1, ".root-servers.net") == 0);
     }
 
-    free_rr_vec(&result);
+    free_rr_vec(result);
     return EXIT_SUCCESS;
 }

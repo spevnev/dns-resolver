@@ -14,6 +14,6 @@ int main(void) {
     ASSERT(rr->data.ip4_addr == get_ip4("1.2.3.4"));
     ASSERT(rr->ttl == 123456);
 
-    free_rr_vec(&result);
+    free_rr_vec(result);
     return EXIT_SUCCESS;
 }

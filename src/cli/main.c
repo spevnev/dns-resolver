@@ -78,6 +78,6 @@ int main(int argc, char **argv) {
         for (uint32_t i = 0; i < result.length; i++) print_rr(result.data[i]);
     }
 
-    free_rr_vec(&result);
+    free_rr_vec(result);
     return EXIT_SUCCESS;
 }

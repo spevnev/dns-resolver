@@ -15,6 +15,6 @@ int main(void) {
     struct in6_addr addr = get_ip6("1:2:3:4::");
     ASSERT(memcmp(&rr->data.ip6_addr, &addr, sizeof(struct in6_addr)) == 0);
 
-    free_rr_vec(&result);
+    free_rr_vec(result);
     return EXIT_SUCCESS;
 }

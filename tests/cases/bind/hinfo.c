@@ -14,6 +14,6 @@ int main(void) {
     ASSERT(strcmp(rr->data.hinfo.cpu, "cpu") == 0);
     ASSERT(strcmp(rr->data.hinfo.os, "os") == 0);
 
-    free_rr_vec(&result);
+    free_rr_vec(result);
     return EXIT_SUCCESS;
 }
