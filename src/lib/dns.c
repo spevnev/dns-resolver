@@ -21,18 +21,18 @@ static const uint8_t LABEL_TYPE_NORMAL = 0;     // 00000000
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
-static bool write_u8(Request *request, uint8_t value) {
-    if (request->length + sizeof(value) > request->size) return false;
-    request->buffer[request->length++] = value;
+static bool write(Request *request, const void *value, size_t size) {
+    if (request->length + size > request->size) return false;
+    memcpy(request->buffer + request->length, value, size);
+    request->length += size;
     return true;
 }
 
+static bool write_u8(Request *request, uint8_t value) { return write(request, &value, sizeof(value)); }
+
 static bool write_u16(Request *request, uint16_t value) {
-    if (request->length + sizeof(value) > request->size) return false;
     uint16_t net_value = htons(value);
-    memcpy(request->buffer + request->length, &net_value, sizeof(net_value));
-    request->length += sizeof(net_value);
-    return true;
+    return write(request, &net_value, sizeof(net_value));
 }
 
 static bool write_domain(Request *request, const char *domain) {
@@ -43,42 +43,36 @@ static bool write_domain(Request *request, const char *domain) {
     const char *cur = domain;
     for (;;) {
         if (*cur == '.' || *cur == '\0') {
-            uint8_t len = cur - start;
-            if (!write_u8(request, len)) return false;
-            if (request->length + len > request->size) return false;
-            memcpy(request->buffer + request->length, start, len);
-            request->length += len;
+            uint8_t length = cur - start;
+            if (!write_u8(request, length)) return false;
+            if (!write(request, start, length)) return false;
             start = cur + 1;
         }
         if (*cur == '\0') break;
         cur++;
     }
-    if (!write_u8(request, 0)) return false;
+    return write_u8(request, 0);
+}
 
+static bool read(Response *response, void *out, size_t size) {
+    if (response->current + size > response->length) return false;
+    memcpy(out, response->current + response->buffer, size);
+    response->current += size;
     return true;
 }
 
-static bool read_u8(Response *response, uint8_t *out) {
-    if (response->current + sizeof(*out) > response->length) return false;
-    *out = response->buffer[response->current];
-    response->current += sizeof(*out);
-    return true;
-}
+static bool read_u8(Response *response, uint8_t *out) { return read(response, out, sizeof(*out)); }
 
 static bool read_u16(Response *response, uint16_t *out) {
     uint16_t value;
-    if (response->current + sizeof(value) > response->length) return false;
-    memcpy(&value, response->current + response->buffer, sizeof(value));
-    response->current += sizeof(value);
+    if (!read(response, &value, sizeof(value))) return false;
     *out = ntohs(value);
     return true;
 }
 
 static bool read_u32(Response *response, uint32_t *out) {
     uint32_t value;
-    if (response->current + sizeof(value) > response->length) return false;
-    memcpy(&value, response->current + response->buffer, sizeof(value));
-    response->current += sizeof(value);
+    if (!read(response, &value, sizeof(value))) return false;
     *out = ntohl(value);
     return true;
 }
@@ -255,7 +249,7 @@ void free_rr(RR *rr) {
 }
 
 bool write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
-                   uint16_t udp_payload_size, uint16_t *id_out) {
+                   bool enable_cookie, uint16_t udp_payload_size, DNSCookies *cookies, uint16_t *id_out) {
     uint16_t id;
     if (getrandom(&id, sizeof(id), 0) != sizeof(id)) return false;
 
@@ -276,9 +270,7 @@ bool write_request(Request *request, bool recursion_desired, const char *domain,
         .authority_count = 0,
         .additional_count = enable_edns ? htons(1) : 0,
     };
-    if (request->length + sizeof(header) > request->size) return false;
-    memcpy(request->buffer + request->length, &header, sizeof(header));
-    request->length += sizeof(header);
+    if (!write(request, &header, sizeof(header))) return false;
 
     // Write question.
     if (!write_domain(request, domain)) return false;
@@ -301,12 +293,23 @@ bool write_request(Request *request, bool recursion_desired, const char *domain,
             .dnssec_ok = 0,
             ._reserved2 = 0,
         };
-        if (request->length + sizeof(opt_fields) > request->size) return false;
-        memcpy(request->buffer + request->length, &opt_fields, sizeof(opt_fields));
-        request->length += sizeof(opt_fields);
+        if (!write(request, &opt_fields, sizeof(opt_fields))) return false;
 
-        // No additional options.
-        if (!write_u16(request, 0)) return false;
+        // Write options.
+        if (enable_cookie) {
+            if (!cookies->is_client_set) {
+                cookies->is_client_set = true;
+                if (getrandom(&cookies->client, sizeof(cookies->client), 0) != sizeof(cookies->client)) return false;
+            }
+
+            if (!write_u16(request, 12 + cookies->server_size)) return false;
+            if (!write_u16(request, OPT_COOKIE)) return false;
+            if (!write_u16(request, 8 + cookies->server_size)) return false;
+            if (!write(request, &cookies->client, sizeof(cookies->client))) return false;
+            if (!write(request, cookies->server, cookies->server_size)) return false;
+        } else {
+            if (!write_u16(request, 0)) return false;
+        }
     }
 
     *id_out = id;
@@ -427,8 +430,30 @@ bool read_rr(Response *response, RR **rr_out) {
             rr->data.opt.extended_rcode = opt_fields.extended_rcode;
             if (opt_fields.version > EDNS_VERSION) goto error;
 
-            // Ignore additional options.
-            response->current += data_length;
+            uint16_t option_code, option_length;
+            while (data_length > 0) {
+                if (!read_u16(response, &option_code)) goto error;
+                if (!read_u16(response, &option_length)) goto error;
+
+                if (4 + option_length > data_length) goto error;
+                data_length -= 4 + option_length;
+
+                switch (option_code) {
+                    case OPT_COOKIE:
+                        if (!(16 <= option_length && option_length <= 40)) goto error;
+
+                        if (!read(response, &rr->data.opt.cookies.client, sizeof(rr->data.opt.cookies.client)))
+                            goto error;
+
+                        rr->data.opt.cookies.server_size = option_length - sizeof(rr->data.opt.cookies.client);
+                        if (!read(response, rr->data.opt.cookies.server, rr->data.opt.cookies.server_size)) goto error;
+                        break;
+                    default:
+                        if (response->current + option_length > response->length) goto error;
+                        response->current += option_length;
+                        break;
+                }
+            }
         } break;
         default: goto error;
     }

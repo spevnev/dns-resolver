@@ -43,8 +43,11 @@ extern const char *ROOT_NAMESERVER_IP_ADDRS[ROOT_NAMESERVER_COUNT];
 #define RCODE_NOT_IMPLEMENTED 4
 #define RCODE_REFUSED 5
 #define RCODE_BAD_VERSION 16
+#define RCODE_BAD_COOKIE 23
 
 #define EDNS_VERSION 0
+
+#define OPT_COOKIE 10
 
 typedef struct {
     uint16_t id;
@@ -82,6 +85,13 @@ typedef struct {
 } OptTtlFields;
 
 typedef struct {
+    uint64_t client;
+    bool is_client_set;
+    int server_size;
+    uint8_t server[32];
+} DNSCookies;
+
+typedef struct {
     char *domain;
     uint16_t type;
     uint32_t ttl;
@@ -106,6 +116,7 @@ typedef struct {
         struct {
             uint16_t udp_payload_size;
             uint8_t extended_rcode;
+            DNSCookies cookies;
         } opt;
     } data;
 } RR;
@@ -128,7 +139,7 @@ void print_rr(RR *rr);
 void free_rr(RR *rr);
 
 bool write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
-                   uint16_t udp_payload_size, uint16_t *id_out);
+                   bool enable_cookie, uint16_t udp_payload_size, DNSCookies *cookies, uint16_t *id_out);
 
 bool read_response_header(Response *response, uint16_t request_id, DNSHeader *header_out);
 bool validate_question(Response *response, uint16_t request_qtype, const char *request_domain);

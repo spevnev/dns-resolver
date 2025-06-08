@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include "config.h"
@@ -97,9 +98,44 @@ ssize_t recvfrom(int fd, void *buffer, size_t buffer_size, int flags, struct soc
 
     // OPT should come last so copy the remaining part of the request.
     if (!mock_response.disable_copy_opt) {
+        // Check whether request has cookies enabled, and whether server cookie was sent.
+        bool has_cookies = false;
+        bool has_server_cookie = false;
+        if (request_length >= 23) {
+            uint16_t cookie_opt = htons(OPT_COOKIE);
+            if (memcmp(request_current + 11, &cookie_opt, sizeof(cookie_opt)) == 0) has_cookies = true;
+
+            uint16_t opt_length_net;
+            memcpy(&opt_length_net, request_current + 13, sizeof(opt_length_net));
+            if (ntohs(opt_length_net) > 8) has_server_cookie = true;
+        }
+
+        uint8_t *opt_length_ptr = current + 9;
+        uint8_t *cookies_length_ptr = current + 13;
+        uint8_t *cookies_client_ptr = current + 15;
         COPY(request_current, request_length);
         request_current += request_length;
         request_length = 0;
+
+        if (mock_response.set_wrong_cookie && has_cookies) *cookies_client_ptr = *cookies_client_ptr + 1;
+
+        // Append a server cookie to the response, adjust lengths.
+        if (!mock_response.disable_server_cookie && has_cookies && !has_server_cookie) {
+            uint64_t server_cookie;
+            int result = getrandom(&server_cookie, sizeof(server_cookie), 0);
+            assert(result == sizeof(server_cookie));
+            COPY(&server_cookie, sizeof(server_cookie));
+
+            // Update OPT data length.
+            uint16_t current_opt_length_net;
+            memcpy(&current_opt_length_net, opt_length_ptr, sizeof(current_opt_length_net));
+            uint16_t new_opt_length_net = htons(ntohs(current_opt_length_net) + 8);
+            memcpy(opt_length_ptr, &new_opt_length_net, sizeof(new_opt_length_net));
+
+            // Update COOKIE length.
+            uint16_t new_cookies_length_net = htons(16);
+            memcpy(cookies_length_ptr, &new_cookies_length_net, sizeof(new_cookies_length_net));
+        }
     }
     COPY(mock_response.additional, mock_response.additional_length);
 

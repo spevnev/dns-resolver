@@ -12,6 +12,8 @@ typedef struct {
     bool authentic_data;
     bool recursion_available;
     bool disable_copy_opt;
+    bool set_wrong_cookie;
+    bool disable_server_cookie;
 
     const uint8_t *questions;
     size_t questions_length;
