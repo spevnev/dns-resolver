@@ -395,26 +395,22 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
         if (!read_response_header(&response, id, &response_header)) NAMESERVER_ERROR("Invalid response header.\n");
         if (response_header.is_truncated) QUERY_ERROR("Response is truncated.\n");
 
+        bool unknown_rcode = false;
         switch (response_header.rcode) {
             case RCODE_SUCCESS: break;
             case RCODE_NAME_ERROR:
                 if (!response_header.is_authoritative) goto nameserver_error;
                 if (query->verbose && is_subquery) printf("Domain name does not exist.\n");
                 found = true;
-                continue;
+                break;
             case RCODE_FORMAT_ERROR:    NAMESERVER_ERROR("Nameserver unable to interpret query.\n");
             case RCODE_SERVER_ERROR:    NAMESERVER_ERROR("Nameserver error.\n");
             case RCODE_NOT_IMPLEMENTED: NAMESERVER_ERROR("Nameserver does not support this type of query.\n");
             case RCODE_REFUSED:         NAMESERVER_ERROR("Nameserver refused to answer.\n");
-            default:                    NAMESERVER_ERROR("Invalid or unsupported response code %d.\n", response_header.rcode);
+            default:                    unknown_rcode = true; break;
         }
 
         if (!validate_question(&response, qtype, sname)) NAMESERVER_ERROR("Invalid question in response.\n");
-
-        // No answer and no referral, remove the nameserver.
-        if (response_header.answer_count == 0 && response_header.authority_count == 0) {
-            NAMESERVER_ERROR("Response has empty answer and authority sections.\n");
-        }
 
         if (response_header.answer_count > 0) {
             for (uint32_t i = 0; i < prev_rrs.length; i++) free_rr(prev_rrs.data[i]);
@@ -530,8 +526,10 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
 
             if (query->enable_edns && !has_opt) NAMESERVER_ERROR("Nameserver does not support EDNS.\n");
 
+            unknown_rcode = false;
             switch (extended_rcode) {
-                case RCODE_SUCCESS: break;
+                case RCODE_SUCCESS:
+                case RCODE_NAME_ERROR: break;
                 case RCODE_BAD_VERSION:
                     NAMESERVER_ERROR("Nameserver does not support EDNS version %d.\n", EDNS_VERSION);
                 case RCODE_BAD_COOKIE:
@@ -550,6 +548,8 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
             // Response does not have additional sections, and thus no OPT.
             NAMESERVER_ERROR("Nameserver does not support EDNS.\n");
         }
+
+        if (unknown_rcode) NAMESERVER_ERROR("Invalid or unsupported response code %d.\n", response_header.rcode);
 
         continue;
     nameserver_error:
