@@ -59,7 +59,7 @@ ssize_t recvfrom(int fd, void *buffer, size_t buffer_size, int flags, struct soc
         .is_authoritative = mock_response.is_authoritative,
         .opcode = mock_response.opcode,
         .is_response = !mock_response.set_is_query,
-        .rcode = mock_response.rcode,
+        .rcode = mock_response.rcode & 15,
         .checking_disabled = request_header.checking_disabled,
         .authentic_data = mock_response.authentic_data,
         ._reserved = 0,
@@ -110,6 +110,7 @@ ssize_t recvfrom(int fd, void *buffer, size_t buffer_size, int flags, struct soc
             if (ntohs(opt_length_net) > 8) has_server_cookie = true;
         }
 
+        uint8_t *extended_rcode_ptr = current + 5;
         uint8_t *opt_length_ptr = current + 9;
         uint8_t *cookies_length_ptr = current + 13;
         uint8_t *cookies_client_ptr = current + 15;
@@ -117,6 +118,7 @@ ssize_t recvfrom(int fd, void *buffer, size_t buffer_size, int flags, struct soc
         request_current += request_length;
         request_length = 0;
 
+        *extended_rcode_ptr = mock_response.rcode >> 4;
         if (mock_response.set_wrong_cookie && has_cookies) *cookies_client_ptr = *cookies_client_ptr + 1;
 
         // Append a server cookie to the response, adjust lengths.
