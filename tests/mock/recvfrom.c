@@ -129,7 +129,7 @@ ssize_t recvfrom(int fd, void *buffer, size_t buffer_size, int flags, struct soc
             // Update OPT data length.
             uint16_t current_opt_length_net;
             memcpy(&current_opt_length_net, opt_length_ptr, sizeof(current_opt_length_net));
-            uint16_t new_opt_length_net = htons(ntohs(current_opt_length_net) + 8);
+            uint16_t new_opt_length_net = htons(ntohs(current_opt_length_net) + sizeof(server_cookie));
             memcpy(opt_length_ptr, &new_opt_length_net, sizeof(new_opt_length_net));
 
             // Update COOKIE length.

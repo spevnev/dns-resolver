@@ -178,6 +178,33 @@ static bool read_txt_data(Response *response, uint16_t data_length, TXT *txt) {
     return true;
 }
 
+static bool read_opt_data(Response *response, uint16_t data_length, OPT *opt) {
+    uint16_t option_code, option_length;
+    while (data_length > 0) {
+        if (!read_u16(response, &option_code)) return false;
+        if (!read_u16(response, &option_length)) return false;
+
+        if (OPTION_HEADER_SIZE + option_length > data_length) return false;
+        data_length -= OPTION_HEADER_SIZE + option_length;
+
+        switch (option_code) {
+            case OPT_COOKIE:
+                if (!(16 <= option_length && option_length <= 40)) return false;
+
+                if (!read(response, &opt->cookies.client, sizeof(opt->cookies.client))) return false;
+
+                opt->cookies.server_size = option_length - sizeof(opt->cookies.client);
+                if (!read(response, opt->cookies.server, opt->cookies.server_size)) return false;
+                break;
+            default:
+                if (response->current + option_length > response->length) return false;
+                response->current += option_length;
+                break;
+        }
+    }
+    return true;
+}
+
 static const char *type_to_str(uint16_t type) {
     switch (type) {
         case TYPE_A:     return "A";
@@ -225,6 +252,7 @@ void print_rr(RR *rr) {
 }
 
 void free_rr(RR *rr) {
+    if (rr == NULL) return;
     switch (rr->type) {
         case TYPE_A:
         case TYPE_AAAA:
@@ -302,9 +330,10 @@ bool write_request(Request *request, bool recursion_desired, const char *domain,
                 if (getrandom(&cookies->client, sizeof(cookies->client), 0) != sizeof(cookies->client)) return false;
             }
 
-            if (!write_u16(request, 12 + cookies->server_size)) return false;
+            uint16_t option_length = sizeof(cookies->client) + cookies->server_size;
+            if (!write_u16(request, OPTION_HEADER_SIZE + option_length)) return false;
             if (!write_u16(request, OPT_COOKIE)) return false;
-            if (!write_u16(request, 8 + cookies->server_size)) return false;
+            if (!write_u16(request, option_length)) return false;
             if (!write(request, &cookies->client, sizeof(cookies->client))) return false;
             if (!write(request, cookies->server, cookies->server_size)) return false;
         } else {
@@ -354,6 +383,9 @@ bool validate_question(Response *response, uint16_t request_qtype, const char *r
 }
 
 bool read_rr(Response *response, RR **rr_out) {
+    free_rr(*rr_out);
+    *rr_out = NULL;
+
     RR *rr = malloc(sizeof(*rr));
     if (rr == NULL) return false;
 
@@ -430,30 +462,7 @@ bool read_rr(Response *response, RR **rr_out) {
             rr->data.opt.extended_rcode = opt_fields.extended_rcode;
             if (opt_fields.version > EDNS_VERSION) goto error;
 
-            uint16_t option_code, option_length;
-            while (data_length > 0) {
-                if (!read_u16(response, &option_code)) goto error;
-                if (!read_u16(response, &option_length)) goto error;
-
-                if (4 + option_length > data_length) goto error;
-                data_length -= 4 + option_length;
-
-                switch (option_code) {
-                    case OPT_COOKIE:
-                        if (!(16 <= option_length && option_length <= 40)) goto error;
-
-                        if (!read(response, &rr->data.opt.cookies.client, sizeof(rr->data.opt.cookies.client)))
-                            goto error;
-
-                        rr->data.opt.cookies.server_size = option_length - sizeof(rr->data.opt.cookies.client);
-                        if (!read(response, rr->data.opt.cookies.server, rr->data.opt.cookies.server_size)) goto error;
-                        break;
-                    default:
-                        if (response->current + option_length > response->length) goto error;
-                        response->current += option_length;
-                        break;
-                }
-            }
+            if (!read_opt_data(response, data_length, &rr->data.opt)) goto error;
         } break;
         default: goto error;
     }

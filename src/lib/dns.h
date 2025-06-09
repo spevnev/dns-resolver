@@ -47,6 +47,8 @@ extern const char *ROOT_NAMESERVER_IP_ADDRS[ROOT_NAMESERVER_COUNT];
 
 #define EDNS_VERSION 0
 
+#define OPTION_HEADER_SIZE 4
+
 #define OPT_COOKIE 10
 
 typedef struct {
@@ -92,6 +94,12 @@ typedef struct {
 } DNSCookies;
 
 typedef struct {
+    uint16_t udp_payload_size;
+    uint8_t extended_rcode;
+    DNSCookies cookies;
+} OPT;
+
+typedef struct {
     char *domain;
     uint16_t type;
     uint32_t ttl;
@@ -113,11 +121,7 @@ typedef struct {
         } hinfo;
         TXT txt;
         struct in6_addr ip6_addr;
-        struct {
-            uint16_t udp_payload_size;
-            uint8_t extended_rcode;
-            DNSCookies cookies;
-        } opt;
+        OPT opt;
     } data;
 } RR;
 
