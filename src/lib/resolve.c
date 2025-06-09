@@ -218,12 +218,17 @@ static bool choose_nameserver(Query *query, const char *sname, size_t *zone_inde
 
             // There are no resolved nameservers, try to resolve starting from a random index.
             while (zone->nameserver_domains.length > 0) {
+                zone->is_being_resolved = true;
+
                 uint32_t index = rand() % zone->nameserver_domains.length;
                 char *nameserver_domain = zone->nameserver_domains.data[index];
 
-                zone->is_being_resolved = true;
                 RRVec nameserver_addrs = {0};
                 bool found = resolve_rec(query, nameserver_domain, TYPE_A, true, &nameserver_addrs);
+
+                // Adding a zone to `query->zones` (inside of `resolve_rec`) might cause
+                // a realloc which invalidates the pointer, so we take it again.
+                zone = &query->zones.data[i];
                 zone->is_being_resolved = false;
 
                 // If removed before resolving, zone might get empty and be deleted.
@@ -353,15 +358,15 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
     RRVec prev_rrs = {0};
     Zone authority_zone = {0};
     while (!found && !timed_out && choose_nameserver(query, sname, &zone_index, &nameserver_index)) {
-        Zone *nameserver_zone = &query->zones.data[zone_index];
-        Nameserver *nameserver = &nameserver_zone->nameservers.data[nameserver_index];
+        const char *zone_domain = query->zones.data[zone_index].domain;
+        Nameserver *nameserver = &query->zones.data[zone_index].nameservers.data[nameserver_index];
 
         if (query->verbose) {
             printf("\n");
 
             const char *addr_str = inet_ntop(AF_INET, &nameserver->addr, addr_buffer, sizeof(addr_buffer));
             if (addr_str == NULL) addr_str = "invalid address";
-            printf("Resolving %s using %s (%s).\n", sname, addr_str, nameserver_zone->domain);
+            printf("Resolving %s using %s (%s).\n", sname, addr_str, zone_domain);
         }
 
         Request request = {
@@ -460,9 +465,7 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
                     zone_has_domain = true;
 
                     // Check that the referral is a subzone of the current nameserver.
-                    if (!is_subdomain(rr->domain, nameserver_zone->domain)) {
-                        NAMESERVER_ERROR("Ignoring upward referral.\n");
-                    }
+                    if (!is_subdomain(rr->domain, zone_domain)) NAMESERVER_ERROR("Ignoring upward referral.\n");
 
                     free_zone(&authority_zone);
                     memset(&authority_zone, 0, sizeof(authority_zone));
@@ -519,8 +522,6 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
                     if (strcasecmp(authority_zone.nameserver_domains.data[j], rr->domain) == 0) {
                         free(authority_zone.nameserver_domains.data[j]);
                         VECTOR_REMOVE(&authority_zone.nameserver_domains, j);
-                        j--;
-
                         add_nameserver(&authority_zone, rr->data.ip4_addr);
                         break;
                     }

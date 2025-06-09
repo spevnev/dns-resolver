@@ -28,7 +28,6 @@
 // Delete element in by overwriting it with the last one.
 #define VECTOR_REMOVE(vec, index) (vec)->data[index] = VECTOR_POP(vec)
 
-#define VECTOR_TOP(vec) (assert((vec)->length > 0), &(vec)->data[(vec)->length - 1])
 #define VECTOR_POP(vec) (assert((vec)->length > 0), (vec)->data[--(vec)->length])
 
 #define VECTOR_RESET(vec) ((vec)->length = 0)

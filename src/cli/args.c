@@ -29,7 +29,7 @@ typedef struct {
     const char *description;
     OptionType type;
     OptionValue default_value;
-    OptionValue value;
+    OptionValue *value;
 } Option;
 
 typedef struct {
@@ -49,9 +49,9 @@ static void parse_arg(Option *option, char *arg_value) {
     switch (option->type) {
         case OPT_BOOL:
             if (strcasecmp(arg_value, "true") == 0) {
-                option->value.bool_ = true;
+                option->value->bool_ = true;
             } else if (strcasecmp(arg_value, "false") == 0) {
-                option->value.bool_ = false;
+                option->value->bool_ = false;
             } else {
                 FATAL("Invalid option value, expected a boolean but found \"%s\"", arg_value);
             }
@@ -59,18 +59,18 @@ static void parse_arg(Option *option, char *arg_value) {
         case OPT_LONG: {
             char *end = NULL;
             errno = 0;
-            option->value.long_ = strtol(arg_value, &end, 10);
+            option->value->long_ = strtol(arg_value, &end, 10);
             if (errno == ERANGE) {
-                if (option->value.long_ == LONG_MAX) {
+                if (option->value->long_ == LONG_MAX) {
                     FATAL("Option value overflow: %s is greater than %ld", arg_value, LONG_MAX);
                 }
-                if (option->value.long_ == LONG_MIN) {
+                if (option->value->long_ == LONG_MIN) {
                     FATAL("Option value underflow: %s is less than %ld", arg_value, LONG_MIN);
                 }
             }
             if (*end != '\0') FATAL("Invalid option value, expected a number but found \"%s\"", arg_value);
         } break;
-        case OPT_STRING: option->value.string = arg_value; break;
+        case OPT_STRING: option->value->string = arg_value; break;
     }
 }
 
@@ -80,31 +80,36 @@ static Option *new_option(char short_name, const char *name, const char *descrip
         .short_name = short_name,
         .name = name,
         .description = description,
+        // Value is allocated on the heap so that realloc of `options` does not
+        // invalidate pointers (which are returned by option_TYPE functions).
+        .value = malloc(sizeof(option.value)),
     };
+    if (option.value == NULL) OUT_OF_MEMORY();
+
     VECTOR_PUSH(&options, option);
-    return VECTOR_TOP(&options);
+    return &options.data[options.length - 1];
 }
 
 bool *option_bool(char short_name, const char *name, const char *description, bool show_default, bool default_value) {
     Option *option = new_option(short_name, name, description, show_default);
     option->type = OPT_BOOL;
-    option->default_value.bool_ = option->value.bool_ = default_value;
-    return &option->value.bool_;
+    option->default_value.bool_ = option->value->bool_ = default_value;
+    return &option->value->bool_;
 }
 
 long *option_long(char short_name, const char *name, const char *description, bool show_default, long default_value) {
     Option *option = new_option(short_name, name, description, show_default);
     option->type = OPT_LONG;
-    option->default_value.long_ = option->value.long_ = default_value;
-    return &option->value.long_;
+    option->default_value.long_ = option->value->long_ = default_value;
+    return &option->value->long_;
 }
 
 const char **option_str(char short_name, const char *name, const char *description, bool show_default,
                         const char *default_value) {
     Option *option = new_option(short_name, name, description, show_default);
     option->type = OPT_STRING;
-    option->default_value.string = option->value.string = default_value;
-    return &option->value.string;
+    option->default_value.string = option->value->string = default_value;
+    return &option->value->string;
 }
 
 void print_options(void) {
@@ -177,7 +182,7 @@ char *parse_args(int argc, char **argv) {
                     parse_arg(option, SHIFT_ARGS());
                 } else {
                     // -O
-                    option->value.bool_ = true;
+                    option->value->bool_ = true;
                 }
                 found = true;
                 break;
@@ -194,7 +199,7 @@ char *parse_args(int argc, char **argv) {
                 // --no-opt
                 if (option->type == OPT_BOOL && arg_name_len > 3 && strncmp(arg_name, "no-", 3) == 0
                     && strcmp(arg_name + 3, option->name) == 0) {
-                    option->value.bool_ = false;
+                    option->value->bool_ = false;
                     found = true;
                     break;
                 }
@@ -225,7 +230,7 @@ char *parse_args(int argc, char **argv) {
                     parse_arg(option, SHIFT_ARGS());
                 } else {
                     // --opt
-                    option->value.bool_ = true;
+                    option->value->bool_ = true;
                 }
                 found = true;
                 break;
