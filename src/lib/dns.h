@@ -6,9 +6,6 @@
 #include <stdint.h>
 #include "vector.h"
 
-#define ROOT_NAMESERVER_COUNT 13
-extern const char *ROOT_NAMESERVER_IP_ADDRS[ROOT_NAMESERVER_COUNT];
-
 #define DNS_PORT 53
 
 #define MAX_DOMAIN_LENGTH 255
@@ -22,10 +19,13 @@ extern const char *ROOT_NAMESERVER_IP_ADDRS[ROOT_NAMESERVER_COUNT];
 // Recommended request payload size when using UDP with EDNS (RFC6891).
 #define EDNS_UDP_PAYLOAD_SIZE 1280
 
+// https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-2
 #define CLASS_IN 1
 
+// https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-5
 #define OPCODE_QUERY 0
 
+// https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-4
 #define TYPE_A 1
 #define TYPE_NS 2
 #define TYPE_CNAME 5
@@ -36,6 +36,7 @@ extern const char *ROOT_NAMESERVER_IP_ADDRS[ROOT_NAMESERVER_COUNT];
 #define TYPE_OPT 41
 #define QTYPE_ANY 255
 
+// https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-6
 #define RCODE_SUCCESS 0
 #define RCODE_FORMAT_ERROR 1
 #define RCODE_SERVER_ERROR 2
@@ -45,10 +46,12 @@ extern const char *ROOT_NAMESERVER_IP_ADDRS[ROOT_NAMESERVER_COUNT];
 #define RCODE_BAD_VERSION 16
 #define RCODE_BAD_COOKIE 23
 
+// https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-14
 #define EDNS_VERSION 0
 
 #define OPTION_HEADER_SIZE 4
 
+// https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-11
 #define OPT_COOKIE 10
 
 typedef struct {

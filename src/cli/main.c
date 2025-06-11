@@ -8,6 +8,7 @@
 #include "dns.h"
 #include "error.h"
 #include "resolve.h"
+#include "root_ns.h"
 
 static uint16_t str_to_qtype(const char *str) {
     if (strcasecmp(str, "A") == 0) return TYPE_A;
@@ -66,7 +67,7 @@ int main(int argc, char **argv) {
 
         // Start search from one of the root nameservers.
         if (*nameserver != NULL) printf("Ignoring provided nameserver because trace is enabled.\n");
-        *nameserver = ROOT_NAMESERVER_IP_ADDRS[rand() % ROOT_NAMESERVER_COUNT];
+        *nameserver = ROOT_IP_ADDRS[rand() % ROOT_IP_ADDRS_COUNT];
     }
 
     RRVec result = {0};

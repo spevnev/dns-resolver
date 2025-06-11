@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include "dns.h"
 #include "error.h"
+#include "root_ns.h"
 #include "vector.h"
 
 typedef struct {
@@ -180,15 +181,11 @@ static bool udp_receive(Query *query, uint8_t *buffer, size_t buffer_size, struc
 }
 
 static void add_root_zone(ZoneVec *zones) {
-    Zone zone = {
-        .is_being_resolved = false,
-        .domain = "",
-        .nameserver_domains = {0},
-        .nameservers = {0},
-    };
+    Zone zone = {.domain = ""};
+
     in_addr_t ip_addr;
-    for (size_t i = 0; i < ROOT_NAMESERVER_COUNT; i++) {
-        int result = inet_pton(AF_INET, ROOT_NAMESERVER_IP_ADDRS[i], &ip_addr);
+    for (size_t i = 0; i < ROOT_IP_ADDRS_COUNT; i++) {
+        int result = inet_pton(AF_INET, ROOT_IP_ADDRS[i], &ip_addr);
         assert(result == 1);
         add_nameserver(&zone, ip_addr);
     }
@@ -603,12 +600,7 @@ bool resolve(const char *domain, uint16_t qtype, const char *nameserver, uint16_
 
     // Create a zone of initial nameservers.
     in_addr_t ip_addr;
-    Zone zone = {
-        .is_being_resolved = false,
-        .domain = "",  // root
-        .nameserver_domains = {0},
-        .nameservers = {0},
-    };
+    Zone zone = {.domain = ""};
     if (nameserver == NULL) {
         load_resolve_config(&zone);
     } else if (inet_pton(AF_INET, nameserver, &ip_addr) == 1) {

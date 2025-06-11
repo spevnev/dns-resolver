@@ -1,6 +1,7 @@
 #include "common.h"
 #include "config.h"
 #include "resolve.h"
+#include "root_ns.h"
 
 int main(void) {
     RRVec result = {0};
@@ -8,7 +9,7 @@ int main(void) {
                          &result);
     ASSERT(found);
 
-    ASSERT(result.length == ROOT_NAMESERVER_COUNT);
+    ASSERT(result.length == sizeof(ROOT_IP_ADDRS) / sizeof(*ROOT_IP_ADDRS));
     for (uint32_t i = 0; i < result.length; i++) {
         RR *rr = result.data[i];
         ASSERT(rr->type == TYPE_NS);
