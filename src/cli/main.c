@@ -18,6 +18,9 @@ static uint16_t str_to_qtype(const char *str) {
     if (strcasecmp(str, "HINFO") == 0) return TYPE_HINFO;
     if (strcasecmp(str, "TXT") == 0) return TYPE_TXT;
     if (strcasecmp(str, "AAAA") == 0) return TYPE_AAAA;
+    if (strcasecmp(str, "DS") == 0) return TYPE_DS;
+    if (strcasecmp(str, "RRSIG") == 0) return TYPE_RRSIG;
+    if (strcasecmp(str, "DNSKEY") == 0) return TYPE_DNSKEY;
     if (strcasecmp(str, "ANY") == 0) return QTYPE_ANY;
     FATAL("Invalid or unsupported qtype \"%s\"", str);
 }
@@ -34,6 +37,7 @@ int main(int argc, char **argv) {
     bool *recursion_desired = option_bool('r', "rdflag", "set Recursion Desired", true, true);
     bool *enable_edns = option_bool('\0', "edns", "enable EDNS", true, true);
     bool *enable_cookie = option_bool('\0', "cookie", "enable DNS cookie", true, true);
+    bool *enable_dnssec = option_bool('\0', "dnssec", "enable DNSSEC", true, true);
     bool *trace = option_bool('\0', "trace", "trace delegations from the root nameserver", true, false);
     bool *no_root_ns = option_bool('\0', "no-root", "do not ask root nameservers", true, false);
 
@@ -60,6 +64,7 @@ int main(int argc, char **argv) {
     if (!*recursion_desired) flags |= RESOLVE_DISABLE_RDFLAG;
     if (!*enable_edns) flags |= RESOLVE_DISABLE_EDNS;
     if (!*enable_cookie) flags |= RESOLVE_DISABLE_COOKIE;
+    if (!*enable_dnssec) flags |= RESOLVE_DISABLE_DNSSEC;
     if (*no_root_ns) flags |= RESOLVE_NO_ROOT_NS;
     if (*verbose) flags |= RESOLVE_VERBOSE;
     if (*trace) {

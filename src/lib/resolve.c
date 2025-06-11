@@ -45,6 +45,7 @@ typedef struct {
     bool recursion_desired;
     bool enable_edns;
     bool enable_cookie;
+    bool enable_dnssec;
     bool verbose;
     // Time when timeout was last updated.
     uint64_t time_ns;
@@ -372,7 +373,7 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
             .length = 0,
         };
         if (!write_request(&request, query->recursion_desired, sname, qtype, query->enable_edns, query->enable_cookie,
-                           buffer_size, &nameserver->cookies, &id)) {
+                           query->enable_dnssec, buffer_size, &nameserver->cookies, &id)) {
             QUERY_ERROR("Request buffer is too small.\n");
         }
 
@@ -588,6 +589,7 @@ bool resolve(const char *domain, uint16_t qtype, const char *nameserver, uint16_
         .recursion_desired = !(flags & RESOLVE_DISABLE_RDFLAG),
         .enable_edns = !(flags & RESOLVE_DISABLE_EDNS),
         .enable_cookie = !(flags & RESOLVE_DISABLE_COOKIE),
+        .enable_dnssec = !(flags & RESOLVE_DISABLE_DNSSEC),
         .verbose = flags & RESOLVE_VERBOSE,
         .time_ns = get_time_ns(),
         .udp_timeout_ns = udp_timeout_ns,

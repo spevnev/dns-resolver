@@ -34,6 +34,9 @@
 #define TYPE_TXT 16
 #define TYPE_AAAA 28
 #define TYPE_OPT 41
+#define TYPE_DS 43
+#define TYPE_RRSIG 46
+#define TYPE_DNSKEY 48
 #define QTYPE_ANY 255
 
 // https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-6
@@ -53,6 +56,19 @@
 
 // https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-11
 #define OPT_COOKIE 10
+
+// https://www.iana.org/assignments/dns-sec-alg-numbers/dns-sec-alg-numbers.xhtml
+#define SECURITY_RSASHA1 5
+#define SECURITY_RSASHA1NSEC3SHA1 7
+#define SECURITY_RSASHA256 8
+#define SECURITY_RSASHA512 10
+#define SECURITY_ECDSAP256SHA256 13
+
+// https://www.iana.org/assignments/ds-rr-types/ds-rr-types.xhtml
+#define DIGEST_SHA1 1
+#define DIGEST_SHA256 2
+
+#define DNSKEY_PROTOCOL 3
 
 typedef struct {
     uint16_t id;
@@ -125,6 +141,33 @@ typedef struct {
         TXT txt;
         struct in6_addr ip6_addr;
         OPT opt;
+        struct {
+            uint16_t key_tag;
+            uint8_t algorithm;
+            uint8_t digest_type;
+            uint8_t *digest;
+            size_t digest_size;
+        } ds;
+        struct {
+            uint16_t type_covered;
+            uint8_t algorithm;
+            uint8_t labels;
+            uint32_t original_ttl;
+            uint32_t signature_expiration;
+            uint32_t signature_inception;
+            uint16_t key_tag;
+            char *signer_name;
+            uint8_t *signature;
+            size_t signature_size;
+        } rrsig;
+        struct {
+            uint16_t flags;
+            uint8_t protocol;
+            uint8_t algorithm;
+            uint8_t *public_key;
+            size_t public_key_size;
+            uint16_t key_tag;
+        } dnskey;
     } data;
 } RR;
 
@@ -146,7 +189,8 @@ void print_rr(RR *rr);
 void free_rr(RR *rr);
 
 bool write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
-                   bool enable_cookie, uint16_t udp_payload_size, DNSCookies *cookies, uint16_t *id_out);
+                   bool enable_cookie, bool enable_dnssec, uint16_t udp_payload_size, DNSCookies *cookies,
+                   uint16_t *id_out);
 
 bool read_response_header(Response *response, uint16_t request_id, DNSHeader *header_out);
 bool validate_question(Response *response, uint16_t request_qtype, const char *request_domain);

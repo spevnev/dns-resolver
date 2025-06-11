@@ -7,6 +7,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/random.h>
+#include "encode.h"
 #include "vector.h"
 
 static const uint8_t LABEL_DATA_MASK = 63;      // 00111111
@@ -15,6 +16,13 @@ static const uint8_t LABEL_TYPE_POINTER = 192;  // 11000000
 static const uint8_t LABEL_TYPE_NORMAL = 0;     // 00000000
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
+
+static uint16_t compute_key_tag(const uint8_t *rdata, uint16_t rdata_length) {
+    uint64_t ac = 0;
+    for (int i = 0; i < rdata_length; ++i) ac += (i & 1) ? rdata[i] : rdata[i] << 8;
+    ac += (ac >> 16) & 0xFFFF;
+    return ac & 0xFFFF;
+}
 
 static bool write(Request *request, const void *value, size_t size) {
     if (request->length + size > request->size) return false;
@@ -202,14 +210,18 @@ static bool read_opt_data(Response *response, uint16_t data_length, OPT *opt) {
 
 static const char *type_to_str(uint16_t type) {
     switch (type) {
-        case TYPE_A:     return "A";
-        case TYPE_NS:    return "NS";
-        case TYPE_CNAME: return "CNAME";
-        case TYPE_SOA:   return "SOA";
-        case TYPE_HINFO: return "HINFO";
-        case TYPE_TXT:   return "TXT";
-        case TYPE_AAAA:  return "AAAA";
-        default:         return "unknown";
+        case TYPE_A:      return "A";
+        case TYPE_NS:     return "NS";
+        case TYPE_CNAME:  return "CNAME";
+        case TYPE_SOA:    return "SOA";
+        case TYPE_HINFO:  return "HINFO";
+        case TYPE_TXT:    return "TXT";
+        case TYPE_AAAA:   return "AAAA";
+        case TYPE_OPT:    return "OPT";
+        case TYPE_DS:     return "DS";
+        case TYPE_RRSIG:  return "RRSIG";
+        case TYPE_DNSKEY: return "DNSKEY";
+        default:          return "unknown";
     }
 }
 
@@ -242,6 +254,24 @@ void print_rr(RR *rr) {
                 printf("%s", addr_buffer);
             }
         } break;
+        case TYPE_DS: {
+            char *digest = hex_string_encode(rr->data.ds.digest, rr->data.ds.digest_size);
+            printf("%u %u %u %s", rr->data.ds.key_tag, rr->data.ds.algorithm, rr->data.ds.digest_type, digest);
+            free(digest);
+        } break;
+        case TYPE_RRSIG: {
+            char *signature = base64_encode(rr->data.rrsig.signature, rr->data.rrsig.signature_size);
+            printf("%s %u %u %u %u %u %u %s %s", type_to_str(rr->data.rrsig.type_covered), rr->data.rrsig.algorithm,
+                   rr->data.rrsig.labels, rr->data.rrsig.original_ttl, rr->data.rrsig.signature_expiration,
+                   rr->data.rrsig.signature_inception, rr->data.rrsig.key_tag, rr->data.rrsig.signer_name, signature);
+            free(signature);
+        } break;
+        case TYPE_DNSKEY: {
+            char *public_key = base64_encode(rr->data.dnskey.public_key, rr->data.dnskey.public_key_size);
+            printf("%u %u %u %s", rr->data.dnskey.flags, rr->data.dnskey.protocol, rr->data.dnskey.protocol,
+                   public_key);
+            free(public_key);
+        } break;
     }
     printf("\n");
 }
@@ -266,13 +296,20 @@ void free_rr(RR *rr) {
             free(rr->data.txt.buffer);
             VECTOR_FREE(&rr->data.txt);
             break;
+        case TYPE_DS: free(rr->data.ds.digest); break;
+        case TYPE_RRSIG:
+            free(rr->data.rrsig.signer_name);
+            free(rr->data.rrsig.signature);
+            break;
+        case TYPE_DNSKEY: free(rr->data.dnskey.public_key); break;
     }
     free(rr->domain);
     free(rr);
 }
 
 bool write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
-                   bool enable_cookie, uint16_t udp_payload_size, DNSCookies *cookies, uint16_t *id_out) {
+                   bool enable_cookie, bool enable_dnssec, uint16_t udp_payload_size, DNSCookies *cookies,
+                   uint16_t *id_out) {
     uint16_t id;
     if (getrandom(&id, sizeof(id), 0) != sizeof(id)) return false;
 
@@ -313,7 +350,7 @@ bool write_request(Request *request, bool recursion_desired, const char *domain,
             .extended_rcode = 0,
             .version = EDNS_VERSION,
             ._reserved = 0,
-            .dnssec_ok = 0,
+            .dnssec_ok = enable_dnssec,
             ._reserved2 = 0,
         };
         if (!write(request, &opt_fields, sizeof(opt_fields))) return false;
@@ -458,6 +495,57 @@ bool read_rr(Response *response, RR **rr_out) {
             if (opt_fields.version > EDNS_VERSION) goto error;
 
             if (!read_opt_data(response, data_length, &rr->data.opt)) goto error;
+        } break;
+        case TYPE_DS: {
+            if (!read_u16(response, &rr->data.ds.key_tag)) goto error;
+            if (!read_u8(response, &rr->data.ds.algorithm)) goto error;
+            if (!read_u8(response, &rr->data.ds.digest_type)) goto error;
+
+            rr->data.ds.digest_size = data_length - 4;
+            rr->data.ds.digest = malloc(rr->data.ds.digest_size);
+            if (rr->data.ds.digest == NULL) goto error;
+
+            if (!read(response, rr->data.ds.digest, rr->data.ds.digest_size)) goto error;
+        } break;
+        case TYPE_RRSIG: {
+            size_t response_current_before = response->current;
+            if (!read_u16(response, &rr->data.rrsig.type_covered)) goto error;
+            if (!read_u8(response, &rr->data.rrsig.algorithm)) goto error;
+            if (!read_u8(response, &rr->data.rrsig.labels)) goto error;
+            if (!read_u32(response, &rr->data.rrsig.original_ttl)) goto error;
+            if (!read_u32(response, &rr->data.rrsig.signature_expiration)) goto error;
+            if (!read_u32(response, &rr->data.rrsig.signature_inception)) goto error;
+            if (!read_u16(response, &rr->data.rrsig.key_tag)) goto error;
+            if (!read_domain(response, &rr->data.rrsig.signer_name)) goto error;
+            size_t data_read = response->current - response_current_before;
+
+            rr->data.rrsig.signature_size = data_length - data_read;
+            rr->data.rrsig.signature = malloc(rr->data.rrsig.signature_size);
+            if (rr->data.rrsig.signature == NULL) {
+                free(rr->data.rrsig.signer_name);
+                goto error;
+            }
+
+            if (!read(response, rr->data.rrsig.signature, rr->data.rrsig.signature_size)) {
+                free(rr->data.rrsig.signer_name);
+                free(rr->data.rrsig.signature);
+                goto error;
+            }
+        } break;
+        case TYPE_DNSKEY: {
+            const uint8_t *dnskey_rdata = response->buffer + response->current;
+            if (!read_u16(response, &rr->data.dnskey.flags)) goto error;
+            if (!read_u8(response, &rr->data.dnskey.protocol)) goto error;
+            if (rr->data.dnskey.protocol != DNSKEY_PROTOCOL) goto error;
+            if (!read_u8(response, &rr->data.dnskey.algorithm)) goto error;
+
+            rr->data.dnskey.public_key_size = data_length - 4;
+            rr->data.dnskey.public_key = malloc(rr->data.dnskey.public_key_size);
+            if (rr->data.dnskey.public_key == NULL) goto error;
+
+            if (!read(response, rr->data.dnskey.public_key, rr->data.dnskey.public_key_size)) goto error;
+
+            rr->data.dnskey.key_tag = compute_key_tag(dnskey_rdata, data_length);
         } break;
         default: goto error;
     }
