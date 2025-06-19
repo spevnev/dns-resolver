@@ -59,15 +59,17 @@
 #define OPT_COOKIE 10
 
 // https://www.iana.org/assignments/dns-sec-alg-numbers/dns-sec-alg-numbers.xhtml
-#define SECURITY_RSASHA1 5
-#define SECURITY_RSASHA1NSEC3SHA1 7
-#define SECURITY_RSASHA256 8
-#define SECURITY_RSASHA512 10
-#define SECURITY_ECDSAP256SHA256 13
+#define SIGNING_RSASHA1 5
+#define SIGNING_RSASHA1NSEC3SHA1 7
+#define SIGNING_RSASHA256 8
+#define SIGNING_RSASHA512 10
+#define SIGNING_ECDSAP256SHA256 13
+#define SIGNING_ECDSAP384SHA384 14
 
 // https://www.iana.org/assignments/ds-rr-types/ds-rr-types.xhtml
 #define DIGEST_SHA1 1
 #define DIGEST_SHA256 2
+#define DIGEST_SHA384 4
 
 #define DNSKEY_PROTOCOL 3
 
@@ -125,6 +127,40 @@ typedef struct {
 } OPT;
 
 typedef struct {
+    uint16_t type_covered;
+    uint8_t algorithm;
+    uint8_t labels;
+    uint32_t original_ttl;
+    uint32_t expiration_time;
+    uint32_t inception_time;
+    uint16_t key_tag;
+    char *signer_name;
+    uint8_t *signature;
+    size_t signature_size;
+    uint8_t *rdata;
+    uint16_t rdata_length;
+} RRSIG;
+
+typedef struct {
+    union {
+        uint16_t flags;
+        struct {
+            uint8_t is_zone_key : 1;
+            uint8_t : 7;
+            uint8_t is_secure_entry : 1;
+            uint8_t : 7;
+        };
+    };
+    uint8_t protocol;
+    uint8_t algorithm;
+    uint8_t *key;
+    size_t key_size;
+    uint16_t key_tag;
+    uint8_t *rdata;
+    uint16_t rdata_length;
+} DNSKEY;
+
+typedef struct {
     char *domain;
     uint16_t type;
     uint32_t ttl;
@@ -150,42 +186,12 @@ typedef struct {
         struct {
             uint16_t key_tag;
             uint8_t algorithm;
-            uint8_t digest_type;
+            uint8_t digest_algorithm;
             uint8_t *digest;
             size_t digest_size;
         } ds;
-        struct {
-            uint16_t type_covered;
-            uint8_t algorithm;
-            uint8_t labels;
-            uint32_t original_ttl;
-            uint32_t expiration_time;
-            uint32_t inception_time;
-            uint16_t key_tag;
-            char *signer_name;
-            uint8_t *signature;
-            size_t signature_size;
-            uint8_t *rdata;
-            uint16_t rdata_length;
-        } rrsig;
-        struct {
-            union {
-                uint16_t flags;
-                struct {
-                    uint8_t is_zone_key : 1;
-                    uint8_t : 7;
-                    uint8_t is_secure_entry : 1;
-                    uint8_t : 7;
-                };
-            };
-            uint8_t protocol;
-            uint8_t algorithm;
-            uint8_t *public_key;
-            size_t public_key_size;
-            uint16_t key_tag;
-            uint8_t *rdata;
-            uint16_t rdata_length;
-        } dnskey;
+        RRSIG rrsig;
+        DNSKEY dnskey;
     } data;
 } RR;
 

@@ -256,7 +256,7 @@ void print_rr(RR *rr) {
         } break;
         case TYPE_DS: {
             char *digest = hex_string_encode(rr->data.ds.digest, rr->data.ds.digest_size);
-            printf("%u %u %u %s", rr->data.ds.key_tag, rr->data.ds.algorithm, rr->data.ds.digest_type, digest);
+            printf("%u %u %u %s", rr->data.ds.key_tag, rr->data.ds.algorithm, rr->data.ds.digest_algorithm, digest);
             free(digest);
         } break;
         case TYPE_RRSIG: {
@@ -267,10 +267,9 @@ void print_rr(RR *rr) {
             free(signature);
         } break;
         case TYPE_DNSKEY: {
-            char *public_key = base64_encode(rr->data.dnskey.public_key, rr->data.dnskey.public_key_size);
-            printf("%u %u %u %s", rr->data.dnskey.flags, rr->data.dnskey.protocol, rr->data.dnskey.protocol,
-                   public_key);
-            free(public_key);
+            char *key = base64_encode(rr->data.dnskey.key, rr->data.dnskey.key_size);
+            printf("%u %u %u %s", rr->data.dnskey.flags, rr->data.dnskey.protocol, rr->data.dnskey.protocol, key);
+            free(key);
         } break;
     }
     printf("\n");
@@ -303,7 +302,7 @@ void free_rr(RR *rr) {
             free(rr->data.rrsig.rdata);
             break;
         case TYPE_DNSKEY:
-            free(rr->data.dnskey.public_key);
+            free(rr->data.dnskey.key);
             free(rr->data.dnskey.rdata);
             break;
     }
@@ -489,7 +488,7 @@ bool read_rr(Response *response, RR **rr_out) {
         case TYPE_DS: {
             if (!read_u16(response, &rr->data.ds.key_tag)) goto error;
             if (!read_u8(response, &rr->data.ds.algorithm)) goto error;
-            if (!read_u8(response, &rr->data.ds.digest_type)) goto error;
+            if (!read_u8(response, &rr->data.ds.digest_algorithm)) goto error;
 
             rr->data.ds.digest_size = data_length - 4;
             rr->data.ds.digest = malloc(rr->data.ds.digest_size);
@@ -544,12 +543,12 @@ bool read_rr(Response *response, RR **rr_out) {
             if (rr->data.dnskey.protocol != DNSKEY_PROTOCOL) goto error;
             if (!read_u8(response, &rr->data.dnskey.algorithm)) goto error;
 
-            rr->data.dnskey.public_key_size = data_length - 4;
-            rr->data.dnskey.public_key = malloc(rr->data.dnskey.public_key_size);
-            if (rr->data.dnskey.public_key == NULL) goto error;
+            rr->data.dnskey.key_size = data_length - 4;
+            rr->data.dnskey.key = malloc(rr->data.dnskey.key_size);
+            if (rr->data.dnskey.key == NULL) goto error;
 
-            if (!read(response, rr->data.dnskey.public_key, rr->data.dnskey.public_key_size)) {
-                free(rr->data.dnskey.public_key);
+            if (!read(response, rr->data.dnskey.key, rr->data.dnskey.key_size)) {
+                free(rr->data.dnskey.key);
                 goto error;
             }
 
@@ -558,7 +557,7 @@ bool read_rr(Response *response, RR **rr_out) {
             rr->data.dnskey.rdata_length = data_length;
             rr->data.dnskey.rdata = malloc(data_length);
             if (rr->data.dnskey.rdata == NULL) {
-                free(rr->data.dnskey.public_key);
+                free(rr->data.dnskey.key);
                 goto error;
             }
             memcpy(rr->data.dnskey.rdata, dnskey_rdata, data_length);
