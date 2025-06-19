@@ -62,7 +62,6 @@ ssize_t recvfrom(int fd, void *buffer, size_t buffer_size, int flags, struct soc
         .rcode = mock_response.rcode & 15,
         .checking_disabled = request_header.checking_disabled,
         .authentic_data = mock_response.authentic_data,
-        ._reserved = 0,
         .recursion_available = mock_response.recursion_available,
         .question_count = copy_questions ? request_header.question_count : htons(mock_response.questions_count),
         .answer_count = htons(mock_response.answers_count),

@@ -6,6 +6,10 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <openssl/bn.h>
+#include <openssl/ec.h>
+#include <openssl/ecdsa.h>
+#include <openssl/evp.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -35,6 +39,8 @@ typedef struct {
     char domain[DOMAIN_SIZE];
     StrVec nameserver_domains;
     NameserverVec nameservers;
+    RR *ds;
+    RRVec dnskeys;
 } Zone;
 
 VECTOR_TYPEDEF(ZoneVec, Zone);
@@ -63,6 +69,7 @@ static const uint64_t NS_IN_SEC = 1000000000;
 static const uint64_t NS_IN_MS = 1000000;
 static const uint64_t NS_IN_US = 1000;
 
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 static void add_nameserver(Zone *zone, in_addr_t addr) {
@@ -72,6 +79,42 @@ static void add_nameserver(Zone *zone, in_addr_t addr) {
         .cookies = {0},
     };
     VECTOR_PUSH(&zone->nameservers, nameserver);
+}
+
+static void add_root_zone(ZoneVec *zones) {
+    Zone zone = {.domain = ""};
+
+    in_addr_t ip_addr;
+    for (size_t i = 0; i < ROOT_IP_ADDRS_COUNT; i++) {
+        int result = inet_pton(AF_INET, ROOT_IP_ADDRS[i], &ip_addr);
+        assert(result == 1);
+        add_nameserver(&zone, ip_addr);
+    }
+
+    for (size_t i = 0; i < ROOT_DNSKEYS_COUNT; i++) {
+        RR *rr = malloc(sizeof(*rr));
+        if (rr == NULL) OUT_OF_MEMORY();
+        memcpy(rr, &ROOT_DNSKEYS[i], sizeof(*rr));
+
+        rr->domain = strdup(rr->domain);
+        if (rr->domain == NULL) OUT_OF_MEMORY();
+
+        rr->data.dnskey.public_key = malloc(rr->data.dnskey.public_key_size);
+        if (rr->data.dnskey.public_key == NULL) OUT_OF_MEMORY();
+        memcpy(rr->data.dnskey.public_key, ROOT_DNSKEYS[i].data.dnskey.public_key, rr->data.dnskey.public_key_size);
+
+        VECTOR_PUSH(&zone.dnskeys, rr);
+    }
+
+    VECTOR_PUSH(zones, zone);
+}
+
+static void free_zone(Zone *zone) {
+    for (uint32_t j = 0; j < zone->nameserver_domains.length; j++) free(zone->nameserver_domains.data[j]);
+    VECTOR_FREE(&zone->nameserver_domains);
+    VECTOR_FREE(&zone->nameservers);
+    free_rr(zone->ds);
+    free_rr_vec(zone->dnskeys);
 }
 
 static bool is_whitespace(char ch) { return ch == ' ' || ch == '\t'; }
@@ -179,24 +222,6 @@ static bool udp_receive(Query *query, uint8_t *buffer, size_t buffer_size, struc
 
     *response_length_out = result;
     return true;
-}
-
-static void add_root_zone(ZoneVec *zones) {
-    Zone zone = {.domain = ""};
-
-    in_addr_t ip_addr;
-    for (size_t i = 0; i < ROOT_IP_ADDRS_COUNT; i++) {
-        int result = inet_pton(AF_INET, ROOT_IP_ADDRS[i], &ip_addr);
-        assert(result == 1);
-        add_nameserver(&zone, ip_addr);
-    }
-    VECTOR_PUSH(zones, zone);
-}
-
-static void free_zone(Zone *zone) {
-    for (uint32_t j = 0; j < zone->nameserver_domains.length; j++) free(zone->nameserver_domains.data[j]);
-    VECTOR_FREE(&zone->nameserver_domains);
-    VECTOR_FREE(&zone->nameservers);
 }
 
 static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool is_subquery, RRVec *result);
@@ -307,6 +332,303 @@ static bool follow_cnames(RRVec *rrs, char sname[static DOMAIN_SIZE], uint16_t q
     return found;
 }
 
+static size_t domain_to_canonical(const char *domain, uint8_t output_buffer[static CANONICAL_DOMAIN_SIZE]) {
+    assert(strlen(domain) <= MAX_DOMAIN_LENGTH);
+
+    // Handle root domain.
+    if (domain[0] == '\0') {
+        *output_buffer = 0;
+        return 1;
+    }
+
+    uint8_t *out = output_buffer;
+    const char *start = domain;
+    const char *cur = domain;
+    for (;;) {
+        if (*cur == '.' || *cur == '\0') {
+            uint8_t length = cur - start;
+            *out++ = length;
+
+            for (uint8_t i = 0; i < length; i++) {
+                if ('A' <= start[i] && start[i] <= 'Z') {
+                    out[i] = start[i] - 'A' + 'a';
+                } else {
+                    out[i] = start[i];
+                }
+            }
+
+            out += length;
+            start = cur + 1;
+        }
+        if (*cur == '\0') break;
+        cur++;
+    }
+    *out++ = 0;
+    return out - output_buffer;
+}
+
+static uint8_t get_domain_labels_num(const char *domain) {
+    if (*domain == '\0') return 0;
+
+    uint8_t labels = 1;
+    while (*domain != '\0') {
+        if (*domain == '.') labels++;
+        domain++;
+    }
+    return labels;
+}
+
+static const EVP_MD *get_ds_digest_algorithm(uint8_t algorithm) {
+    switch (algorithm) {
+        case DIGEST_SHA1:   return EVP_sha1();
+        case DIGEST_SHA256: return EVP_sha256();
+        default:            return NULL;
+    }
+}
+
+static const EVP_MD *get_rrsig_digest_algorithm(uint8_t algorithm) {
+    switch (algorithm) {
+        case SECURITY_RSASHA1:
+        case SECURITY_RSASHA1NSEC3SHA1: return EVP_sha1();
+        case SECURITY_RSASHA256:
+        case SECURITY_ECDSAP256SHA256:  return EVP_sha256();
+        case SECURITY_RSASHA512:        return EVP_sha512();
+        default:                        return NULL;
+    }
+}
+
+static StrVec domain_to_labels(const char *domain) {
+    StrVec labels = {0};
+
+    const char *start = domain;
+    const char *cur = domain;
+    for (;;) {
+        if (*cur == '.' || *cur == '\0') {
+            size_t length = cur - start;
+            char *label = malloc(length + 1);
+            if (label == NULL) OUT_OF_MEMORY();
+            memcpy(label, start, length);
+            label[length] = '\0';
+            VECTOR_PUSH(&labels, label);
+            start = cur + 1;
+        }
+        if (*cur == '\0') break;
+        cur++;
+    }
+
+    return labels;
+}
+
+static int canonical_order_comparator(const void *a_raw, const void *b_raw) {
+    const RR *a = *((const RR **) a_raw);
+    const RR *b = *((const RR **) b_raw);
+
+    int result = 0;
+    StrVec labels_a = domain_to_labels(a->domain);
+    StrVec labels_b = domain_to_labels(b->domain);
+    int i = labels_a.length - 1, j = labels_b.length - 1;
+    while (result == 0 && i >= 0 && j >= 0) {
+        result = strcasecmp(labels_a.data[i], labels_b.data[j]);
+        i--;
+        j--;
+    }
+    for (uint32_t i = 0; i < labels_a.length; i++) free(labels_a.data[i]);
+    for (uint32_t i = 0; i < labels_b.length; i++) free(labels_b.data[i]);
+    VECTOR_FREE(&labels_a);
+    VECTOR_FREE(&labels_b);
+
+    if (result != 0) return result;
+    if (i >= 0) return +1;
+    if (j >= 0) return -1;
+
+    assert(a->type == b->type);
+    switch (a->type) {
+        case TYPE_DNSKEY:
+            result = memcmp(a->data.dnskey.rdata, b->data.dnskey.rdata,
+                            MIN(a->data.dnskey.rdata_length, b->data.dnskey.rdata_length));
+            if (result != 0) return result;
+            if (a->data.dnskey.rdata_length > b->data.dnskey.rdata_length) return +1;
+            if (a->data.dnskey.rdata_length < b->data.dnskey.rdata_length) return -1;
+            FATAL("Duplicate RR are not allowed");
+        default:
+            FATAL("TODO: domains are equal, compare RDATA");
+    }
+}
+
+static EVP_PKEY *load_ecdsa_p256_key(const uint8_t *dnssec_key) {
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
+    if (ctx == NULL) return NULL;
+
+    unsigned char key[65];
+    key[0] = POINT_CONVERSION_UNCOMPRESSED;
+    memcpy(key + 1, dnssec_key, 64);
+
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_utf8_string("group", "prime256v1", 0),
+        OSSL_PARAM_construct_octet_string("pub", key, 65),
+        OSSL_PARAM_construct_end(),
+    };
+
+    EVP_PKEY *pkey = NULL;
+    if (EVP_PKEY_fromdata_init(ctx) != 1 ||  //
+        EVP_PKEY_fromdata(ctx, &pkey, EVP_PKEY_PUBLIC_KEY, params) != 1) {
+        EVP_PKEY_CTX_free(ctx);
+        return NULL;
+    }
+
+    EVP_PKEY_CTX_free(ctx);
+    return pkey;
+}
+
+static unsigned char *load_ecdsa_p256_signature(const uint8_t *dnssec_sig, size_t *signature_length_out) {
+    BIGNUM *r = NULL, *s = NULL;
+    ECDSA_SIG *sig = NULL;
+    unsigned char *der = NULL;
+    int der_length = 0;
+
+    r = BN_bin2bn(dnssec_sig, 32, NULL);
+    s = BN_bin2bn(dnssec_sig + 32, 32, NULL);
+    if (r == NULL || s == NULL) goto exit;
+
+    sig = ECDSA_SIG_new();
+    if (sig == NULL) goto exit;
+    if (!ECDSA_SIG_set0(sig, r, s)) goto exit;
+
+    der_length = i2d_ECDSA_SIG(sig, NULL);
+    if (der_length <= 0) goto exit;
+
+    der = OPENSSL_malloc(der_length);
+    if (der == NULL) goto exit;
+
+    unsigned char *tmp = der;
+    if (i2d_ECDSA_SIG(sig, &tmp) != der_length) {
+        OPENSSL_free(der);
+        der = NULL;
+        goto exit;
+    }
+
+exit:
+    ECDSA_SIG_free(sig);
+    *signature_length_out = der_length;
+    return der;
+}
+
+static bool get_dnskeys(Query *query, Zone *zone) {
+    if (zone->ds == NULL) return false;
+
+    bool result = false;
+    const EVP_MD *ds_digest_type = NULL;
+    EVP_MD_CTX *md_ctx = NULL;
+    unsigned char *digest = NULL;
+    RRVec dnskeys = {0};
+    RR *rrsig = NULL;
+    EVP_PKEY *pkey = NULL;
+    const EVP_MD *rrsig_digest_type = NULL;
+    unsigned char *signature = NULL;
+
+    if ((ds_digest_type = get_ds_digest_algorithm(zone->ds->data.ds.digest_type)) == NULL) goto exit;
+    if ((md_ctx = EVP_MD_CTX_new()) == NULL) goto exit;
+    if ((digest = OPENSSL_malloc(EVP_MD_get_size(ds_digest_type))) == NULL) goto exit;
+
+    if (!resolve_rec(query, zone->domain, TYPE_DNSKEY, true, &dnskeys)) goto exit;
+
+    for (uint32_t i = 0; i < dnskeys.length; i++) {
+        if (dnskeys.data[i]->type == TYPE_RRSIG) {
+            rrsig = dnskeys.data[i];
+            VECTOR_REMOVE(&dnskeys, i);
+            break;
+        }
+    }
+    if (rrsig == NULL) goto exit;
+
+    RR *verified_dnskey = NULL;
+    unsigned int digest_size;
+    uint8_t canonical_domain[CANONICAL_DOMAIN_SIZE];
+    for (uint32_t i = 0; i < dnskeys.length; i++) {
+        RR *dnskey = dnskeys.data[i];
+        if (dnskey->data.dnskey.key_tag != zone->ds->data.ds.key_tag) continue;
+        if (!dnskey->data.dnskey.is_zone_key) continue;
+
+        size_t canonical_length = domain_to_canonical(dnskey->domain, canonical_domain);
+        if (!EVP_DigestInit_ex(md_ctx, ds_digest_type, NULL)
+            || !EVP_DigestUpdate(md_ctx, canonical_domain, canonical_length)
+            || !EVP_DigestUpdate(md_ctx, dnskey->data.dnskey.rdata, dnskey->data.dnskey.rdata_length)
+            || !EVP_DigestFinal_ex(md_ctx, digest, &digest_size)) {
+            goto exit;
+        }
+
+        if (zone->ds->data.ds.digest_size == digest_size
+            && memcmp(digest, zone->ds->data.ds.digest, digest_size) == 0) {
+            verified_dnskey = dnskey;
+            break;
+        }
+    }
+    if (verified_dnskey == NULL) goto exit;
+
+    time_t time_now = time(NULL);
+    if (!(rrsig->data.rrsig.inception_time <= time_now && time_now <= rrsig->data.rrsig.expiration_time)) goto exit;
+    if (strcasecmp(rrsig->domain, verified_dnskey->domain) != 0) goto exit;
+    if (rrsig->data.rrsig.type_covered != TYPE_DNSKEY) goto exit;
+    if (strcasecmp(rrsig->data.rrsig.signer_name, zone->domain) != 0) goto exit;
+    if (rrsig->data.rrsig.algorithm != verified_dnskey->data.dnskey.algorithm) goto exit;
+    if (rrsig->data.rrsig.key_tag != verified_dnskey->data.dnskey.key_tag) goto exit;
+    if (strcasecmp(rrsig->domain, verified_dnskey->domain) != 0) goto exit;
+    if (rrsig->data.rrsig.labels > get_domain_labels_num(verified_dnskey->domain)) goto exit;
+
+    assert(verified_dnskey->data.dnskey.algorithm == SECURITY_ECDSAP256SHA256);
+
+    assert(verified_dnskey->data.dnskey.public_key_size == 64);
+    pkey = load_ecdsa_p256_key(verified_dnskey->data.dnskey.public_key);
+    if (pkey == NULL) goto exit;
+
+    if ((rrsig_digest_type = get_rrsig_digest_algorithm(verified_dnskey->data.dnskey.algorithm)) == NULL) goto exit;
+    if (EVP_DigestVerifyInit(md_ctx, NULL, rrsig_digest_type, NULL, pkey) != 1) goto exit;
+    if (EVP_DigestVerifyUpdate(md_ctx, rrsig->data.rrsig.rdata, rrsig->data.rrsig.rdata_length) != 1) goto exit;
+
+    qsort(dnskeys.data, dnskeys.length, sizeof(*dnskeys.data), canonical_order_comparator);
+    for (uint32_t i = 0; i < dnskeys.length; i++) {
+        size_t canonical_length = domain_to_canonical(dnskeys.data[i]->domain, canonical_domain);
+        uint16_t type_net = htons(dnskeys.data[i]->type);
+        uint16_t class_net = htons(CLASS_IN);
+        uint32_t ttl_net = htonl(rrsig->data.rrsig.original_ttl);
+        uint16_t rdata_length_net = htons(dnskeys.data[i]->data.dnskey.rdata_length);
+
+        if (EVP_DigestVerifyUpdate(md_ctx, canonical_domain, canonical_length) != 1
+            || EVP_DigestVerifyUpdate(md_ctx, &type_net, sizeof(type_net)) != 1
+            || EVP_DigestVerifyUpdate(md_ctx, &class_net, sizeof(class_net)) != 1
+            || EVP_DigestVerifyUpdate(md_ctx, &ttl_net, sizeof(ttl_net)) != 1
+            || EVP_DigestVerifyUpdate(md_ctx, &rdata_length_net, sizeof(rdata_length_net)) != 1
+            || EVP_DigestVerifyUpdate(md_ctx, dnskeys.data[i]->data.dnskey.rdata,
+                                      dnskeys.data[i]->data.dnskey.rdata_length)
+                   != 1) {
+            goto exit;
+        }
+    }
+
+    assert(rrsig->data.rrsig.signature_size == 64);
+    size_t signature_length;
+    signature = load_ecdsa_p256_signature(rrsig->data.rrsig.signature, &signature_length);
+    if (signature == NULL) goto exit;
+
+    if (EVP_DigestVerifyFinal(md_ctx, signature, signature_length) != 1) goto exit;
+
+    // Move keys to the zone and reset `dnskeys` to avoid freeing them.
+    assert(zone->dnskeys.length == 0 && zone->dnskeys.data == NULL);
+    zone->dnskeys = dnskeys;
+    memset(&dnskeys, 0, sizeof(dnskeys));
+
+    result = true;
+
+exit:
+    OPENSSL_free(signature);
+    EVP_PKEY_free(pkey);
+    free_rr(rrsig);
+    free_rr_vec(dnskeys);
+    OPENSSL_free(digest);
+    EVP_MD_CTX_free(md_ctx);
+    return result;
+}
+
 static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool is_subquery, RRVec *result) {
 #define QUERY_ERROR(...)                                                        \
     do {                                                                        \
@@ -356,15 +678,19 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
     RRVec prev_rrs = {0};
     Zone authority_zone = {0};
     while (!found && !timed_out && choose_nameserver(query, sname, &zone_index, &nameserver_index)) {
-        const char *zone_domain = query->zones.data[zone_index].domain;
-        Nameserver *nameserver = &query->zones.data[zone_index].nameservers.data[nameserver_index];
+        Zone *zone = &query->zones.data[zone_index];
+        Nameserver *nameserver = &zone->nameservers.data[nameserver_index];
+
+        if (query->enable_dnssec && zone->dnskeys.length == 0 && qtype != TYPE_DNSKEY) {
+            if (!get_dnskeys(query, zone)) NAMESERVER_ERROR("Failed to get DNSKEYs for zone \"%s\".\n", zone->domain);
+        }
 
         if (query->verbose) {
             printf("\n");
 
             const char *addr_str = inet_ntop(AF_INET, &nameserver->addr, addr_buffer, sizeof(addr_buffer));
             if (addr_str == NULL) addr_str = "invalid address";
-            printf("Resolving %s using %s (%s).\n", sname, addr_str, zone_domain);
+            printf("Resolving %s using %s (%s).\n", sname, addr_str, zone->domain);
         }
 
         Request request = {
@@ -429,7 +755,7 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
                     continue;
                 }
 
-                if (rr->type == qtype || qtype == QTYPE_ANY) {
+                if (rr->type == qtype || qtype == QTYPE_ANY || (qtype == TYPE_DNSKEY && rr->type == TYPE_RRSIG)) {
                     VECTOR_PUSH(result, rr);
                     // Set to NULL to avoid freeing it.
                     rr = NULL;
@@ -453,25 +779,29 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
                 if (!read_rr(&response, &rr)) NAMESERVER_ERROR("Invalid resource record.\n");
                 if (query->verbose) print_rr(rr);
 
-                if (rr->type != TYPE_NS && rr->type != TYPE_SOA) continue;
+                if (rr->type == TYPE_NS || rr->type == TYPE_SOA) {
+                    if (!zone_has_domain) {
+                        zone_has_domain = true;
 
-                if (!zone_has_domain) {
-                    zone_has_domain = true;
+                        // Check that the referral is a subzone of the current nameserver.
+                        if (!is_subdomain(rr->domain, zone->domain)) NAMESERVER_ERROR("Ignoring upward referral.\n");
 
-                    // Check that the referral is a subzone of the current nameserver.
-                    if (!is_subdomain(rr->domain, zone_domain)) NAMESERVER_ERROR("Ignoring upward referral.\n");
+                        free_zone(&authority_zone);
+                        memset(&authority_zone, 0, sizeof(authority_zone));
 
-                    free_zone(&authority_zone);
-                    memset(&authority_zone, 0, sizeof(authority_zone));
+                        memcpy(authority_zone.domain, rr->domain, strlen(rr->domain) + 1);
+                    } else if (strcasecmp(authority_zone.domain, rr->domain) != 0) {
+                        NAMESERVER_ERROR("Authority section should refer to a single zone but found many.\n");
+                    }
 
-                    memcpy(authority_zone.domain, rr->domain, strlen(rr->domain) + 1);
-                } else if (strcasecmp(authority_zone.domain, rr->domain) != 0) {
-                    NAMESERVER_ERROR("Authority section should refer to a single zone but found many.\n");
+                    char *domain = strdup(rr->type == TYPE_NS ? rr->data.domain : rr->data.soa.master_name);
+                    if (domain == NULL) OUT_OF_MEMORY();
+                    VECTOR_PUSH(&authority_zone.nameserver_domains, domain);
+                } else if (rr->type == TYPE_DS) {
+                    authority_zone.ds = rr;
+                    // Set to NULL to avoid freeing it.
+                    rr = NULL;
                 }
-
-                char *domain = strdup(rr->type == TYPE_NS ? rr->data.domain : rr->data.soa.master_name);
-                if (domain == NULL) OUT_OF_MEMORY();
-                VECTOR_PUSH(&authority_zone.nameserver_domains, domain);
             }
         }
 

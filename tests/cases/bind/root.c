@@ -5,8 +5,8 @@
 
 int main(void) {
     RRVec result = {0};
-    bool found = resolve(".", TYPE_NS, "1.1.1.1", DNS_PORT, TEST_TIMEOUT, RESOLVE_NO_ROOT_NS | RESOLVE_DISABLE_COOKIE,
-                         &result);
+    bool found = resolve(".", TYPE_NS, "1.1.1.1", DNS_PORT, TEST_TIMEOUT,
+                         RESOLVE_NO_ROOT_NS | RESOLVE_DISABLE_COOKIE | RESOLVE_DISABLE_DNSSEC, &result);
     ASSERT(found);
 
     ASSERT(result.length == sizeof(ROOT_IP_ADDRS) / sizeof(*ROOT_IP_ADDRS));

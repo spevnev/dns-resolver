@@ -11,8 +11,8 @@ BIN_NAME := resolve
 BIN_PATH := $(OUT_DIR)/$(BIN_NAME)
 
 CC      := gcc
-CFLAGS  := -O2 -std=c99 -Wall -Wextra -pedantic -I $(LIB_DIR) -MMD -MP
-LDFLAGS :=
+CFLAGS  := -O2 -std=c11 -Wall -Wextra -pedantic -I $(LIB_DIR) -MMD -MP
+LDFLAGS := $(shell pkg-config --libs openssl)
 DEBUG_CFLAGS := -g3 -fsanitize=address,leak,undefined
 
 ifeq ($(DEBUG), 1)
@@ -71,7 +71,7 @@ test: $(BIND_CASES) $(MOCK_CASES)
 
 $(BIND_CASES_OUT_DIR)/%: $(BIND_CASES_OUT_DIR)/%.o $(BIND_COMMON_OBJS)
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) $(DEBUG_CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $(DEBUG_CFLAGS) -o $@ $^ $(LDFLAGS)
 
 $(BIND_CASES_OUT_DIR)/%.o: $(BIND_CASES_DIR)/%.c
 	@mkdir -p $(@D)
@@ -83,7 +83,7 @@ $(BIND_COMMON_OBJ_DIR)/%.o: %.c
 
 $(MOCK_CASES_OUT_DIR)/%: $(MOCK_CASES_OUT_DIR)/%.o $(TEST_MOCK_OBJS) $(MOCK_COMMON_OBJS)
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 $(MOCK_CASES_OUT_DIR)/%.o: $(MOCK_CASES_DIR)/%.c
 	@mkdir -p $(@D)

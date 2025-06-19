@@ -10,6 +10,7 @@
 
 #define MAX_DOMAIN_LENGTH 255
 #define DOMAIN_SIZE (MAX_DOMAIN_LENGTH + 1)
+#define CANONICAL_DOMAIN_SIZE 257
 
 // Maximum allowed TTL (RFC2181).
 #define MAX_TTL 2147483647
@@ -72,16 +73,21 @@
 
 typedef struct {
     uint16_t id;
-    uint8_t recursion_desired : 1;
-    uint8_t is_truncated : 1;
-    uint8_t is_authoritative : 1;
-    uint8_t opcode : 4;
-    uint8_t is_response : 1;
-    uint8_t rcode : 4;
-    uint8_t checking_disabled : 1;
-    uint8_t authentic_data : 1;
-    uint8_t _reserved : 1;
-    uint8_t recursion_available : 1;
+    union {
+        uint16_t flags;
+        struct {
+            uint8_t recursion_desired : 1;
+            uint8_t is_truncated : 1;
+            uint8_t is_authoritative : 1;
+            uint8_t opcode : 4;
+            uint8_t is_response : 1;
+            uint8_t rcode : 4;
+            uint8_t checking_disabled : 1;
+            uint8_t authentic_data : 1;
+            uint8_t : 1;
+            uint8_t recursion_available : 1;
+        };
+    };
     uint16_t question_count;
     uint16_t answer_count;
     uint16_t authority_count;
@@ -100,9 +106,9 @@ typedef struct {
 typedef struct {
     uint8_t extended_rcode;
     uint8_t version;
-    uint8_t _reserved : 7;
+    uint8_t : 7;
     uint8_t dnssec_ok : 1;
-    uint8_t _reserved2 : 8;
+    uint8_t : 8;
 } OptTtlFields;
 
 typedef struct {
@@ -153,20 +159,32 @@ typedef struct {
             uint8_t algorithm;
             uint8_t labels;
             uint32_t original_ttl;
-            uint32_t signature_expiration;
-            uint32_t signature_inception;
+            uint32_t expiration_time;
+            uint32_t inception_time;
             uint16_t key_tag;
             char *signer_name;
             uint8_t *signature;
             size_t signature_size;
+            uint8_t *rdata;
+            uint16_t rdata_length;
         } rrsig;
         struct {
-            uint16_t flags;
+            union {
+                uint16_t flags;
+                struct {
+                    uint8_t is_zone_key : 1;
+                    uint8_t : 7;
+                    uint8_t is_secure_entry : 1;
+                    uint8_t : 7;
+                };
+            };
             uint8_t protocol;
             uint8_t algorithm;
             uint8_t *public_key;
             size_t public_key_size;
             uint16_t key_tag;
+            uint8_t *rdata;
+            uint16_t rdata_length;
         } dnskey;
     } data;
 } RR;
