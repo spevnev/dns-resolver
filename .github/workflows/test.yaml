@@ -17,6 +17,6 @@ jobs:
     - name: Update and upgrade packages
       run: apt-get update -y && apt-get upgrade -y
     - name: Install packages
-      run: apt-get install -y make gcc bind9
+      run: apt-get install -y make gcc bind9 pkg-config libssl-dev openssl
     - name: Run tests
       run: make test
