@@ -4,10 +4,58 @@
 #include <openssl/ec.h>
 #include <openssl/ecdsa.h>
 #include <openssl/evp.h>
+#include <openssl/param_build.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "dns.h"
+
+static EVP_PKEY *load_rsa_key(const uint8_t *dnssec_key, size_t dnssec_key_size) {
+    // If the first byte is, non-zero then it is the length,
+    // if it is 0, then the length is encoded in the next two bytes.
+    uint16_t exponent_length;
+    if (dnssec_key[0] != 0) {
+        exponent_length = dnssec_key[0];
+        dnssec_key_size--;
+        dnssec_key++;
+    } else {
+        uint16_t exponent_length_net;
+        memcpy(&exponent_length_net, dnssec_key + 1, sizeof(exponent_length_net));
+        exponent_length = ntohs(exponent_length_net);
+        dnssec_key_size -= 3;
+        dnssec_key += 3;
+    }
+    if (dnssec_key_size <= exponent_length) return NULL;
+
+    EVP_PKEY *pkey = NULL;
+    EVP_PKEY_CTX *ctx = NULL;
+    OSSL_PARAM *params = NULL;
+    OSSL_PARAM_BLD *param_bld = NULL;
+    BIGNUM *e = NULL, *n = NULL;
+
+    if ((e = BN_bin2bn(dnssec_key, exponent_length, NULL)) == NULL) goto exit;
+    if ((n = BN_bin2bn(dnssec_key + exponent_length, dnssec_key_size - exponent_length, NULL)) == NULL) goto exit;
+
+    if ((param_bld = OSSL_PARAM_BLD_new()) == NULL) goto exit;
+    if (OSSL_PARAM_BLD_push_BN(param_bld, "e", e) != 1) goto exit;
+    if (OSSL_PARAM_BLD_push_BN(param_bld, "n", n) != 1) goto exit;
+    if ((params = OSSL_PARAM_BLD_to_param(param_bld)) == NULL) goto exit;
+
+    if ((ctx = EVP_PKEY_CTX_new_from_name(NULL, "RSA", NULL)) == NULL) goto exit;
+    if (EVP_PKEY_fromdata_init(ctx) != 1) goto exit;
+    if (EVP_PKEY_fromdata(ctx, &pkey, EVP_PKEY_PUBLIC_KEY, params) != 1) {
+        pkey = NULL;
+        goto exit;
+    }
+
+exit:
+    EVP_PKEY_CTX_free(ctx);
+    OSSL_PARAM_free(params);
+    OSSL_PARAM_BLD_free(param_bld);
+    BN_free(n);
+    BN_free(e);
+    return pkey;
+}
 
 static EVP_PKEY *load_ecdsa_key(const uint8_t *dnssec_key, size_t dnssec_key_size, const char *curve) {
     EVP_PKEY *pkey = NULL;
@@ -43,7 +91,6 @@ exit:
     return pkey;
 }
 
-// Converts raw signature format used by DNSSEC into DER format used by OpenSSL.
 static unsigned char *load_ecdsa_signature(const uint8_t *dnssec_sig, size_t dnssec_sig_size, size_t *sig_length_out) {
     ECDSA_SIG *sig = NULL;
     BIGNUM *r = NULL, *s = NULL;
@@ -106,6 +153,10 @@ const EVP_MD *get_rrsig_digest_algorithm(uint8_t algorithm) {
 
 EVP_PKEY *load_dnskey(const DNSKEY *dnskey) {
     switch (dnskey->algorithm) {
+        case SIGNING_RSASHA1:
+        case SIGNING_RSASHA1NSEC3SHA1:
+        case SIGNING_RSASHA256:
+        case SIGNING_RSASHA512:        return load_rsa_key(dnskey->key, dnskey->key_size);
         case SIGNING_ECDSAP256SHA256:
             if (dnskey->key_size != 64) return NULL;
             return load_ecdsa_key(dnskey->key, dnskey->key_size, "prime256v1");
@@ -116,8 +167,16 @@ EVP_PKEY *load_dnskey(const DNSKEY *dnskey) {
     }
 }
 
+// Converts signature format used by DNSSEC into format used by OpenSSL (when needed).
 unsigned char *load_signature(const RRSIG *rrsig, size_t *signature_length_out) {
     switch (rrsig->algorithm) {
+        case SIGNING_RSASHA1:
+        case SIGNING_RSASHA1NSEC3SHA1:
+        case SIGNING_RSASHA256:
+        case SIGNING_RSASHA512:
+            // RSA signature format does not need to be converted.
+            *signature_length_out = rrsig->signature_size;
+            return rrsig->signature;
         case SIGNING_ECDSAP256SHA256:
             if (rrsig->signature_size != 64) return NULL;
             return load_ecdsa_signature(rrsig->signature, rrsig->signature_size, signature_length_out);
@@ -125,5 +184,16 @@ unsigned char *load_signature(const RRSIG *rrsig, size_t *signature_length_out) 
             if (rrsig->signature_size != 96) return NULL;
             return load_ecdsa_signature(rrsig->signature, rrsig->signature_size, signature_length_out);
         default: return NULL;
+    }
+}
+
+void free_signature(const RRSIG *rrsig, unsigned char *signature) {
+    switch (rrsig->algorithm) {
+        case SIGNING_RSASHA1:
+        case SIGNING_RSASHA1NSEC3SHA1:
+        case SIGNING_RSASHA256:
+        case SIGNING_RSASHA512:        break;
+        case SIGNING_ECDSAP256SHA256:
+        case SIGNING_ECDSAP384SHA384:  OPENSSL_free(signature); break;
     }
 }

@@ -37,7 +37,7 @@ typedef struct {
     char domain[DOMAIN_SIZE];
     StrVec nameserver_domains;
     NameserverVec nameservers;
-    RR *ds;
+    RRVec dss;
     RRVec dnskeys;
 } Zone;
 
@@ -79,7 +79,7 @@ static void add_nameserver(Zone *zone, in_addr_t addr) {
     VECTOR_PUSH(&zone->nameservers, nameserver);
 }
 
-static void add_root_zone(ZoneVec *zones) {
+static void add_root_zone(Query *query) {
     Zone zone = {.domain = ""};
 
     in_addr_t ip_addr;
@@ -89,29 +89,31 @@ static void add_root_zone(ZoneVec *zones) {
         add_nameserver(&zone, ip_addr);
     }
 
-    for (size_t i = 0; i < ROOT_DNSKEYS_COUNT; i++) {
-        RR *rr = malloc(sizeof(*rr));
-        if (rr == NULL) OUT_OF_MEMORY();
-        memcpy(rr, &ROOT_DNSKEYS[i], sizeof(*rr));
+    if (query->enable_dnssec) {
+        for (size_t i = 0; i < ROOT_DNSKEYS_COUNT; i++) {
+            RR *rr = malloc(sizeof(*rr));
+            if (rr == NULL) OUT_OF_MEMORY();
+            memcpy(rr, &ROOT_DNSKEYS[i], sizeof(*rr));
 
-        rr->domain = strdup(rr->domain);
-        if (rr->domain == NULL) OUT_OF_MEMORY();
+            rr->domain = strdup(rr->domain);
+            if (rr->domain == NULL) OUT_OF_MEMORY();
 
-        rr->data.dnskey.key = malloc(rr->data.dnskey.key_size);
-        if (rr->data.dnskey.key == NULL) OUT_OF_MEMORY();
-        memcpy(rr->data.dnskey.key, ROOT_DNSKEYS[i].data.dnskey.key, rr->data.dnskey.key_size);
+            rr->data.dnskey.key = malloc(rr->data.dnskey.key_size);
+            if (rr->data.dnskey.key == NULL) OUT_OF_MEMORY();
+            memcpy(rr->data.dnskey.key, ROOT_DNSKEYS[i].data.dnskey.key, rr->data.dnskey.key_size);
 
-        VECTOR_PUSH(&zone.dnskeys, rr);
+            VECTOR_PUSH(&zone.dnskeys, rr);
+        }
     }
 
-    VECTOR_PUSH(zones, zone);
+    VECTOR_PUSH(&query->zones, zone);
 }
 
 static void free_zone(Zone *zone) {
     for (uint32_t j = 0; j < zone->nameserver_domains.length; j++) free(zone->nameserver_domains.data[j]);
     VECTOR_FREE(&zone->nameserver_domains);
     VECTOR_FREE(&zone->nameservers);
-    free_rr(zone->ds);
+    free_rr_vec(zone->dss);
     free_rr_vec(zone->dnskeys);
 }
 
@@ -435,7 +437,7 @@ static int canonical_order_comparator(const void *a_raw, const void *b_raw) {
 }
 
 static bool get_dnskeys(Query *query, Zone *zone) {
-    if (zone->ds == NULL) return false;
+    if (zone->dss.length == 0) return false;
 
     bool result = false;
     RRVec dnskeys = {0};
@@ -445,7 +447,6 @@ static bool get_dnskeys(Query *query, Zone *zone) {
     unsigned char *digest = NULL;
     const EVP_MD *rrsig_digest_algorithm = NULL;
     EVP_PKEY *pkey = NULL;
-    unsigned char *signature = NULL;
 
     if (!resolve_rec(query, zone->domain, TYPE_DNSKEY, true, &dnskeys)) goto exit;
 
@@ -459,8 +460,11 @@ static bool get_dnskeys(Query *query, Zone *zone) {
     if (rrsig_rr == NULL) goto exit;
     RRSIG *rrsig = &rrsig_rr->data.rrsig;
 
+    assert(zone->dss.length == 1);
+    RR *ds = zone->dss.data[0];
+
     if ((ctx = EVP_MD_CTX_new()) == NULL) goto exit;
-    if ((ds_digest_algorithm = get_ds_digest_algorithm(zone->ds->data.ds.digest_algorithm)) == NULL) goto exit;
+    if ((ds_digest_algorithm = get_ds_digest_algorithm(ds->data.ds.digest_algorithm)) == NULL) goto exit;
     if ((digest = OPENSSL_malloc(EVP_MD_get_size(ds_digest_algorithm))) == NULL) goto exit;
 
     RR *verified_dnskey_rr = NULL;
@@ -470,7 +474,7 @@ static bool get_dnskeys(Query *query, Zone *zone) {
         RR *dnskey_rr = dnskeys.data[i];
         DNSKEY *dnskey = &dnskey_rr->data.dnskey;
 
-        if (dnskey->key_tag != zone->ds->data.ds.key_tag) continue;
+        if (dnskey->key_tag != ds->data.ds.key_tag) continue;
         if (!dnskey->is_zone_key) continue;
 
         size_t canonical_length = domain_to_canonical(dnskey_rr->domain, canonical_domain);
@@ -481,8 +485,7 @@ static bool get_dnskeys(Query *query, Zone *zone) {
             goto exit;
         }
 
-        if (zone->ds->data.ds.digest_size == digest_size
-            && memcmp(digest, zone->ds->data.ds.digest, digest_size) == 0) {
+        if (ds->data.ds.digest_size == digest_size && memcmp(digest, ds->data.ds.digest, digest_size) == 0) {
             verified_dnskey_rr = dnskey_rr;
             break;
         }
@@ -527,19 +530,20 @@ static bool get_dnskeys(Query *query, Zone *zone) {
     }
 
     size_t signature_length;
-    if ((signature = load_signature(rrsig, &signature_length)) == NULL) goto exit;
+    unsigned char *signature = load_signature(rrsig, &signature_length);
+    if (signature == NULL) goto exit;
 
-    if (EVP_DigestVerifyFinal(ctx, signature, signature_length) != 1) goto exit;
+    if (EVP_DigestVerifyFinal(ctx, signature, signature_length) == 1) {
+        result = true;
 
-    // Move keys to the zone and reset `dnskeys` to avoid freeing them.
-    assert(zone->dnskeys.length == 0 && zone->dnskeys.data == NULL);
-    zone->dnskeys = dnskeys;
-    memset(&dnskeys, 0, sizeof(dnskeys));
+        // Move keys to the zone and reset `dnskeys` to avoid freeing them.
+        zone->dnskeys = dnskeys;
+        memset(&dnskeys, 0, sizeof(dnskeys));
+    }
 
-    result = true;
+    free_signature(rrsig, signature);
 
 exit:
-    OPENSSL_free(signature);
     EVP_PKEY_free(pkey);
     free_rr(rrsig_rr);
     free_rr_vec(dnskeys);
@@ -717,7 +721,7 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
                     if (domain == NULL) OUT_OF_MEMORY();
                     VECTOR_PUSH(&authority_zone.nameserver_domains, domain);
                 } else if (rr->type == TYPE_DS) {
-                    authority_zone.ds = rr;
+                    VECTOR_PUSH(&authority_zone.dss, rr);
                     // Set to NULL to avoid freeing it.
                     rr = NULL;
                 }
@@ -846,8 +850,8 @@ bool resolve(const char *domain, uint16_t qtype, const char *nameserver, uint16_
         .zones = {0},
     };
 
-    // Load root nameservers in case provided nameserver cannot answer.
-    if (!(flags & RESOLVE_NO_ROOT_NS)) add_root_zone(&query.zones);
+    // Load root nameservers in case provided nameserver cannot answer the query.
+    if (!(flags & RESOLVE_NO_ROOT_NS)) add_root_zone(&query);
 
     // Create a zone of initial nameservers.
     in_addr_t ip_addr;

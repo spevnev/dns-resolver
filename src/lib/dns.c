@@ -268,7 +268,8 @@ void print_rr(RR *rr) {
         } break;
         case TYPE_DNSKEY: {
             char *key = base64_encode(rr->data.dnskey.key, rr->data.dnskey.key_size);
-            printf("%u %u %u %s", rr->data.dnskey.flags, rr->data.dnskey.protocol, rr->data.dnskey.protocol, key);
+            printf("%u %u %u %s", ntohs(rr->data.dnskey.flags), rr->data.dnskey.protocol, rr->data.dnskey.protocol,
+                   key);
             free(key);
         } break;
     }
