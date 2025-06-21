@@ -12,4 +12,6 @@ EVP_PKEY *load_dnskey(const DNSKEY *dnskey);
 unsigned char *load_signature(const RRSIG *rrsig, size_t *signature_length_out);
 void free_signature(const RRSIG *rrsig, unsigned char *signature);
 
+bool sort_rr_vec_canonically(RRVec rr_vec);
+
 #endif  // DNSSEC_H

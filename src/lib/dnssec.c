@@ -8,7 +8,15 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include "dns.h"
+
+typedef struct {
+    RR *rr;
+    StrVec labels;
+} RRWithLabels;
+
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 
 static EVP_PKEY *load_rsa_key(const uint8_t *dnssec_key, size_t dnssec_key_size) {
     // If the first byte is, non-zero then it is the length,
@@ -130,6 +138,59 @@ static unsigned char *load_ecdsa_signature(const uint8_t *dnssec_sig, size_t dns
     return der;
 }
 
+static int canonical_order_comparator(const void *a_raw, const void *b_raw) {
+    RRWithLabels a = *((const RRWithLabels *) a_raw);
+    RRWithLabels b = *((const RRWithLabels *) b_raw);
+
+    int result = 0;
+    int i = a.labels.length - 1, j = b.labels.length - 1;
+    while (result == 0 && i >= 0 && j >= 0) {
+        result = strcasecmp(a.labels.data[i], b.labels.data[j]);
+        i--;
+        j--;
+    }
+    if (result != 0) return result;
+    if (i >= 0) return +1;
+    if (j >= 0) return -1;
+
+    switch (a.rr->type) {
+        case TYPE_DNSKEY: {
+            DNSKEY *dnskey_a = &a.rr->data.dnskey;
+            DNSKEY *dnskey_b = &b.rr->data.dnskey;
+
+            result = memcmp(dnskey_a->rdata, dnskey_b->rdata, MIN(dnskey_a->rdata_length, dnskey_b->rdata_length));
+            if (result != 0) return result;
+
+            if (dnskey_a->rdata_length > dnskey_b->rdata_length) return +1;
+            if (dnskey_a->rdata_length < dnskey_b->rdata_length) return -1;
+            FATAL("Duplicate RR are not allowed");
+        }
+        default:
+            FATAL("TODO: domains are equal, compare RDATA");
+    }
+}
+
+static bool domain_to_labels(const char *domain, StrVec *labels) {
+    const char *start = domain;
+    const char *cur = domain;
+    for (;;) {
+        if (*cur == '.' || *cur == '\0') {
+            size_t length = cur - start;
+            char *label = malloc(length + 1);
+            if (label == NULL) return false;
+            memcpy(label, start, length);
+            label[length] = '\0';
+
+            VECTOR_PUSH(labels, label);
+            start = cur + 1;
+        }
+        if (*cur == '\0') break;
+        cur++;
+    }
+
+    return true;
+}
+
 const EVP_MD *get_ds_digest_algorithm(uint8_t algorithm) {
     switch (algorithm) {
         case DIGEST_SHA1:   return EVP_sha1();
@@ -196,4 +257,30 @@ void free_signature(const RRSIG *rrsig, unsigned char *signature) {
         case SIGNING_ECDSAP256SHA256:
         case SIGNING_ECDSAP384SHA384:  OPENSSL_free(signature); break;
     }
+}
+
+bool sort_rr_vec_canonically(RRVec rr_vec) {
+    bool result = false;
+    RRWithLabels *temp_rrs = NULL;
+
+    size_t temp_rrs_size = rr_vec.length * sizeof(*temp_rrs);
+    if ((temp_rrs = malloc(temp_rrs_size)) == NULL) goto exit;
+    memset(temp_rrs, 0, temp_rrs_size);
+
+    for (uint32_t i = 0; i < rr_vec.length; i++) {
+        temp_rrs[i].rr = rr_vec.data[i];
+        if (!domain_to_labels(rr_vec.data[i]->domain, &temp_rrs[i].labels)) goto exit;
+    }
+
+    qsort(temp_rrs, rr_vec.length, sizeof(*temp_rrs), canonical_order_comparator);
+    result = true;
+
+exit:
+    for (uint32_t i = 0; i < rr_vec.length; i++) {
+        rr_vec.data[i] = temp_rrs[i].rr;
+        for (uint32_t j = 0; j < temp_rrs[i].labels.length; j++) free(temp_rrs[i].labels.data[j]);
+        VECTOR_FREE(&temp_rrs[i].labels);
+    }
+    free(temp_rrs);
+    return result;
 }

@@ -7,7 +7,7 @@ static const char *HEX_TABLE = "0123456789ABCDEF";
 
 char *base64_encode(const uint8_t *src, size_t length) {
     size_t output_size = ((length + 2) / 3) * 4 + 1;
-    char *output = malloc(sizeof(*output) * output_size);
+    char *output = malloc(output_size);
     if (output == NULL) return NULL;
 
     const uint8_t *end = src + length;
@@ -39,7 +39,7 @@ char *base64_encode(const uint8_t *src, size_t length) {
 
 char *hex_string_encode(const uint8_t *src, size_t length) {
     size_t output_size = length * 2 + 1;
-    char *output = malloc(sizeof(*output) * output_size);
+    char *output = malloc(output_size);
     if (output == NULL) return NULL;
 
     const uint8_t *in = src;

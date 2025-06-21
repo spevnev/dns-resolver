@@ -67,7 +67,6 @@ static const uint64_t NS_IN_SEC = 1000000000;
 static const uint64_t NS_IN_MS = 1000000;
 static const uint64_t NS_IN_US = 1000;
 
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 static void add_nameserver(Zone *zone, in_addr_t addr) {
@@ -332,9 +331,7 @@ static bool follow_cnames(RRVec *rrs, char sname[static DOMAIN_SIZE], uint16_t q
     return found;
 }
 
-static size_t domain_to_canonical(const char *domain, uint8_t output_buffer[static CANONICAL_DOMAIN_SIZE]) {
-    assert(strlen(domain) <= MAX_DOMAIN_LENGTH);
-
+static size_t domain_to_canonical(const char *domain, uint8_t output_buffer[static DOMAIN_SIZE]) {
     // Handle root domain.
     if (domain[0] == '\0') {
         *output_buffer = 0;
@@ -378,64 +375,6 @@ static uint8_t get_domain_labels_num(const char *domain) {
     return labels;
 }
 
-static StrVec domain_to_labels(const char *domain) {
-    StrVec labels = {0};
-
-    const char *start = domain;
-    const char *cur = domain;
-    for (;;) {
-        if (*cur == '.' || *cur == '\0') {
-            size_t length = cur - start;
-            char *label = malloc(length + 1);
-            if (label == NULL) OUT_OF_MEMORY();
-            memcpy(label, start, length);
-            label[length] = '\0';
-            VECTOR_PUSH(&labels, label);
-            start = cur + 1;
-        }
-        if (*cur == '\0') break;
-        cur++;
-    }
-
-    return labels;
-}
-
-static int canonical_order_comparator(const void *a_raw, const void *b_raw) {
-    const RR *a = *((const RR **) a_raw);
-    const RR *b = *((const RR **) b_raw);
-
-    int result = 0;
-    StrVec labels_a = domain_to_labels(a->domain);
-    StrVec labels_b = domain_to_labels(b->domain);
-    int i = labels_a.length - 1, j = labels_b.length - 1;
-    while (result == 0 && i >= 0 && j >= 0) {
-        result = strcasecmp(labels_a.data[i], labels_b.data[j]);
-        i--;
-        j--;
-    }
-    for (uint32_t i = 0; i < labels_a.length; i++) free(labels_a.data[i]);
-    for (uint32_t i = 0; i < labels_b.length; i++) free(labels_b.data[i]);
-    VECTOR_FREE(&labels_a);
-    VECTOR_FREE(&labels_b);
-
-    if (result != 0) return result;
-    if (i >= 0) return +1;
-    if (j >= 0) return -1;
-
-    assert(a->type == b->type);
-    switch (a->type) {
-        case TYPE_DNSKEY:
-            result = memcmp(a->data.dnskey.rdata, b->data.dnskey.rdata,
-                            MIN(a->data.dnskey.rdata_length, b->data.dnskey.rdata_length));
-            if (result != 0) return result;
-            if (a->data.dnskey.rdata_length > b->data.dnskey.rdata_length) return +1;
-            if (a->data.dnskey.rdata_length < b->data.dnskey.rdata_length) return -1;
-            FATAL("Duplicate RR are not allowed");
-        default:
-            FATAL("TODO: domains are equal, compare RDATA");
-    }
-}
-
 static bool get_dnskeys(Query *query, Zone *zone) {
     if (zone->dss.length == 0) return false;
 
@@ -469,7 +408,7 @@ static bool get_dnskeys(Query *query, Zone *zone) {
 
     RR *verified_dnskey_rr = NULL;
     unsigned int digest_size;
-    uint8_t canonical_domain[CANONICAL_DOMAIN_SIZE];
+    uint8_t canonical_domain[DOMAIN_SIZE];
     for (uint32_t i = 0; i < dnskeys.length; i++) {
         RR *dnskey_rr = dnskeys.data[i];
         DNSKEY *dnskey = &dnskey_rr->data.dnskey;
@@ -508,7 +447,8 @@ static bool get_dnskeys(Query *query, Zone *zone) {
     if (EVP_DigestVerifyInit(ctx, NULL, rrsig_digest_algorithm, NULL, pkey) != 1) goto exit;
     if (EVP_DigestVerifyUpdate(ctx, rrsig->rdata, rrsig->rdata_length) != 1) goto exit;
 
-    qsort(dnskeys.data, dnskeys.length, sizeof(*dnskeys.data), canonical_order_comparator);
+    if (!sort_rr_vec_canonically(dnskeys)) goto exit;
+
     for (uint32_t i = 0; i < dnskeys.length; i++) {
         RR *dnskey_rr = dnskeys.data[i];
         DNSKEY *dnskey = &dnskey_rr->data.dnskey;
