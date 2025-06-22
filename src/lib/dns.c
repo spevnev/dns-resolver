@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
+#include "dnssec.h"
 #include "encode.h"
 #include "vector.h"
 
@@ -17,9 +18,9 @@ static const uint8_t LABEL_TYPE_NORMAL = 0;     // 00000000
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
-static uint16_t compute_key_tag(const uint8_t *rdata, uint16_t rdata_length) {
+static uint16_t compute_key_tag(const uint8_t *data, uint16_t data_length) {
     uint64_t ac = 0;
-    for (int i = 0; i < rdata_length; ++i) ac += (i & 1) ? rdata[i] : rdata[i] << 8;
+    for (int i = 0; i < data_length; ++i) ac += (i & 1) ? data[i] : data[i] << 8;
     ac += (ac >> 16) & 0xFFFF;
     return ac & 0xFFFF;
 }
@@ -148,6 +149,21 @@ static bool read_domain(Response *response, bool allow_compression, char **domai
     return true;
 }
 
+static bool read_soa_data(Response *response, SOA *soa) {
+    if (!read_domain(response, true, &soa->master_name)) goto error;
+    if (!read_domain(response, true, &soa->rname)) goto error;
+    if (!read_u32(response, &soa->serial)) goto error;
+    if (!read_u32(response, &soa->refresh)) goto error;
+    if (!read_u32(response, &soa->retry)) goto error;
+    if (!read_u32(response, &soa->expire)) goto error;
+    if (!read_u32(response, &soa->negative_ttl)) goto error;
+    return true;
+error:
+    free(soa->master_name);
+    free(soa->rname);
+    return false;
+}
+
 static bool read_char_string(Response *response, char **string_out) {
     uint8_t length;
     if (!read_u8(response, &length)) return false;
@@ -169,7 +185,7 @@ static bool read_char_string(Response *response, char **string_out) {
 // TXT's data is a dynamic array of strings pointing to the buffer.
 static bool read_txt_data(Response *response, uint16_t data_length, TXT *txt) {
     txt->buffer = malloc(data_length * sizeof(*txt->buffer));
-    if (txt->buffer == NULL) return false;
+    if (txt->buffer == NULL) goto error;
     memcpy(txt->buffer, response->buffer + response->current + 1, data_length - 1);
     txt->buffer[data_length - 1] = '\0';
 
@@ -177,9 +193,9 @@ static bool read_txt_data(Response *response, uint16_t data_length, TXT *txt) {
     uint32_t end = response->current + data_length;
     while (response->current < end) {
         uint8_t length;
-        if (!read_u8(response, &length)) return false;
+        if (!read_u8(response, &length)) goto error;
 
-        if (response->current + length > response->length) return false;
+        if (response->current + length > response->length) goto error;
         response->current += length;
 
         VECTOR_PUSH(txt, cur);
@@ -187,6 +203,10 @@ static bool read_txt_data(Response *response, uint16_t data_length, TXT *txt) {
         *(cur++) = '\0';
     }
     return true;
+error:
+    free(txt->buffer);
+    VECTOR_FREE(txt);
+    return false;
 }
 
 static bool read_opt_data(Response *response, uint16_t data_length, OPT *opt) {
@@ -214,6 +234,74 @@ static bool read_opt_data(Response *response, uint16_t data_length, OPT *opt) {
         }
     }
     return true;
+}
+
+static bool read_ds_data(Response *response, DS *ds) {
+    if (!read_u16(response, &ds->key_tag)) goto error;
+    if (!read_u8(response, &ds->algorithm)) goto error;
+    if (!read_u8(response, &ds->digest_algorithm)) goto error;
+    if ((ds->digest_size = get_ds_digest_size(ds->digest_algorithm)) <= 0) goto error;
+    if ((ds->digest = malloc(ds->digest_size)) == NULL) goto error;
+    if (!read(response, ds->digest, ds->digest_size)) goto error;
+    return true;
+error:
+    free(ds->digest);
+    return false;
+}
+
+static bool read_rrsig_data(Response *response, uint16_t data_length, RRSIG *rrsig) {
+    uint32_t data_offset = response->current;
+    if (!read_u16(response, &rrsig->type_covered)) goto error;
+    if (!read_u8(response, &rrsig->algorithm)) goto error;
+    if (!read_u8(response, &rrsig->labels)) goto error;
+    if (!read_u32(response, &rrsig->original_ttl)) goto error;
+    if (!read_u32(response, &rrsig->expiration_time)) goto error;
+    if (!read_u32(response, &rrsig->inception_time)) goto error;
+    if (!read_u16(response, &rrsig->key_tag)) goto error;
+    if (!read_domain(response, false, &rrsig->signer_name)) goto error;
+    uint32_t data_without_signature_length = response->current - data_offset;
+
+    // The remaining part of data is the signature.
+    rrsig->signature_size = data_length - data_without_signature_length;
+    if ((rrsig->signature = malloc(rrsig->signature_size)) == NULL) goto error;
+    if (!read(response, rrsig->signature, rrsig->signature_size)) goto error;
+
+    // Save data without signature to verify it later.
+    rrsig->data_length = data_without_signature_length;
+    if ((rrsig->data = malloc(rrsig->data_length)) == NULL) goto error;
+    memcpy(rrsig->data, response->buffer + data_offset, rrsig->data_length);
+
+    return true;
+error:
+    free(rrsig->signer_name);
+    free(rrsig->signature);
+    return false;
+}
+
+static bool read_dnskey_data(Response *response, uint16_t data_length, DNSKEY *dnskey) {
+    const uint8_t *data_pointer = response->buffer + response->current;
+
+    if (!read(response, &dnskey->flags, sizeof(dnskey->flags))) goto error;
+    if (!read_u8(response, &dnskey->protocol)) goto error;
+    if (dnskey->protocol != DNSKEY_PROTOCOL) goto error;
+    if (!read_u8(response, &dnskey->algorithm)) goto error;
+
+    // The remaining part of data is the key.
+    dnskey->key_size = data_length - DNSKEY_HEADER_SIZE;
+    if ((dnskey->key = malloc(dnskey->key_size)) == NULL) goto error;
+    if (!read(response, dnskey->key, dnskey->key_size)) goto error;
+
+    dnskey->key_tag = compute_key_tag(data_pointer, data_length);
+
+    // Save data to verify the RRSIG later.
+    dnskey->data_length = data_length;
+    if ((dnskey->data = malloc(dnskey->data_length)) == NULL) goto error;
+    memcpy(dnskey->data, data_pointer, dnskey->data_length);
+
+    return true;
+error:
+    free(dnskey->key);
+    return false;
 }
 
 static const char *type_to_str(uint16_t type) {
@@ -328,11 +416,11 @@ void free_rr(RR *rr) {
         case TYPE_RRSIG:
             free(rr->data.rrsig.signer_name);
             free(rr->data.rrsig.signature);
-            free(rr->data.rrsig.rdata);
+            free(rr->data.rrsig.data);
             break;
         case TYPE_DNSKEY:
             free(rr->data.dnskey.key);
-            free(rr->data.dnskey.rdata);
+            free(rr->data.dnskey.data);
             break;
     }
     free(rr->domain);
@@ -458,31 +546,18 @@ bool read_rr(Response *response, RR **rr_out) {
     }
 
     if (response->current + data_length > response->length) goto error;
+    memset(&rr->data, 0, sizeof(rr->data));
+
     switch (rr->type) {
         case TYPE_A:
-            if (data_length != sizeof(rr->data.ip4_addr)) goto error;
-            memcpy(&rr->data.ip4_addr, response->buffer + response->current, sizeof(rr->data.ip4_addr));
-            response->current += sizeof(rr->data.ip4_addr);
+            if (!read(response, &rr->data.ip4_addr, sizeof(rr->data.ip4_addr))) goto error;
             break;
         case TYPE_NS:
         case TYPE_CNAME:
             if (!read_domain(response, true, &rr->data.domain)) goto error;
             break;
         case TYPE_SOA:
-            if (!read_domain(response, true, &rr->data.soa.master_name)) goto error;
-            if (!read_domain(response, true, &rr->data.soa.rname)) {
-                free(rr->data.soa.master_name);
-                goto error;
-            }
-            if (!read_u32(response, &rr->data.soa.serial) ||   //
-                !read_u32(response, &rr->data.soa.refresh) ||  //
-                !read_u32(response, &rr->data.soa.retry) ||    //
-                !read_u32(response, &rr->data.soa.expire) ||   //
-                !read_u32(response, &rr->data.soa.negative_ttl)) {
-                free(rr->data.soa.master_name);
-                free(rr->data.soa.rname);
-                goto error;
-            }
+            if (!read_soa_data(response, &rr->data.soa)) goto error;
             break;
         case TYPE_HINFO:
             if (!read_char_string(response, &rr->data.hinfo.cpu)) goto error;
@@ -492,17 +567,15 @@ bool read_rr(Response *response, RR **rr_out) {
             }
             break;
         case TYPE_TXT:
-            memset(&rr->data.txt, 0, sizeof(rr->data.txt));
             if (!read_txt_data(response, data_length, &rr->data.txt)) goto error;
             break;
         case TYPE_AAAA:
-            if (data_length != sizeof(rr->data.ip6_addr)) goto error;
-            memcpy(&rr->data.ip6_addr, response->buffer + response->current, sizeof(rr->data.ip6_addr));
-            response->current += sizeof(rr->data.ip6_addr);
+            if (!read(response, &rr->data.ip6_addr, sizeof(rr->data.ip6_addr))) goto error;
             break;
         case TYPE_OPT: {
             if (!is_root_domain(rr->domain)) goto error;
 
+            // Nameserver's max UDP payload size is stored in the class field.
             rr->data.opt.udp_payload_size = MAX(class, STANDARD_UDP_PAYLOAD_SIZE);
 
             uint32_t net_ttl = htonl(rr->ttl);
@@ -514,83 +587,15 @@ bool read_rr(Response *response, RR **rr_out) {
 
             if (!read_opt_data(response, data_length, &rr->data.opt)) goto error;
         } break;
-        case TYPE_DS: {
-            if (!read_u16(response, &rr->data.ds.key_tag)) goto error;
-            if (!read_u8(response, &rr->data.ds.algorithm)) goto error;
-            if (!read_u8(response, &rr->data.ds.digest_algorithm)) goto error;
-
-            rr->data.ds.digest_size = data_length - 4;
-            rr->data.ds.digest = malloc(rr->data.ds.digest_size);
-            if (rr->data.ds.digest == NULL) goto error;
-
-            if (!read(response, rr->data.ds.digest, rr->data.ds.digest_size)) {
-                free(rr->data.ds.digest);
-                goto error;
-            }
-        } break;
-        case TYPE_RRSIG: {
-            const uint8_t *rrsig_rdata = response->buffer + response->current;
-            size_t response_current_before = response->current;
-            if (!read_u16(response, &rr->data.rrsig.type_covered)) goto error;
-            if (!read_u8(response, &rr->data.rrsig.algorithm)) goto error;
-            if (!read_u8(response, &rr->data.rrsig.labels)) goto error;
-            if (!read_u32(response, &rr->data.rrsig.original_ttl)) goto error;
-            if (!read_u32(response, &rr->data.rrsig.expiration_time)) goto error;
-            if (!read_u32(response, &rr->data.rrsig.inception_time)) goto error;
-            if (!read_u16(response, &rr->data.rrsig.key_tag)) goto error;
-            if (!read_domain(response, false, &rr->data.rrsig.signer_name)) goto error;
-            size_t rdata_length_without_signature = response->current - response_current_before;
-
-            // Save RDATA without signature to verify it later.
-            rr->data.rrsig.rdata_length = rdata_length_without_signature;
-            rr->data.rrsig.rdata = malloc(rdata_length_without_signature);
-            if (rr->data.rrsig.rdata == NULL) {
-                free(rr->data.rrsig.signer_name);
-                goto error;
-            }
-            memcpy(rr->data.rrsig.rdata, rrsig_rdata, rdata_length_without_signature);
-
-            // The rest of RDATA is the signature.
-            rr->data.rrsig.signature_size = data_length - rdata_length_without_signature;
-            rr->data.rrsig.signature = malloc(rr->data.rrsig.signature_size);
-            if (rr->data.rrsig.signature == NULL) {
-                free(rr->data.rrsig.signer_name);
-                free(rr->data.rrsig.rdata);
-                goto error;
-            }
-            if (!read(response, rr->data.rrsig.signature, rr->data.rrsig.signature_size)) {
-                free(rr->data.rrsig.signer_name);
-                free(rr->data.rrsig.rdata);
-                free(rr->data.rrsig.signature);
-                goto error;
-            }
-        } break;
-        case TYPE_DNSKEY: {
-            const uint8_t *dnskey_rdata = response->buffer + response->current;
-            if (!read(response, &rr->data.dnskey.flags, sizeof(rr->data.dnskey.flags))) goto error;
-            if (!read_u8(response, &rr->data.dnskey.protocol)) goto error;
-            if (rr->data.dnskey.protocol != DNSKEY_PROTOCOL) goto error;
-            if (!read_u8(response, &rr->data.dnskey.algorithm)) goto error;
-
-            rr->data.dnskey.key_size = data_length - 4;
-            rr->data.dnskey.key = malloc(rr->data.dnskey.key_size);
-            if (rr->data.dnskey.key == NULL) goto error;
-
-            if (!read(response, rr->data.dnskey.key, rr->data.dnskey.key_size)) {
-                free(rr->data.dnskey.key);
-                goto error;
-            }
-
-            rr->data.dnskey.key_tag = compute_key_tag(dnskey_rdata, data_length);
-
-            rr->data.dnskey.rdata_length = data_length;
-            rr->data.dnskey.rdata = malloc(data_length);
-            if (rr->data.dnskey.rdata == NULL) {
-                free(rr->data.dnskey.key);
-                goto error;
-            }
-            memcpy(rr->data.dnskey.rdata, dnskey_rdata, data_length);
-        } break;
+        case TYPE_DS:
+            if (!read_ds_data(response, &rr->data.ds)) goto error;
+            break;
+        case TYPE_RRSIG:
+            if (!read_rrsig_data(response, data_length, &rr->data.rrsig)) goto error;
+            break;
+        case TYPE_DNSKEY:
+            if (!read_dnskey_data(response, data_length, &rr->data.dnskey)) goto error;
+            break;
         default: goto error;
     }
 

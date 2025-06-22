@@ -157,11 +157,11 @@ static int canonical_order_comparator(const void *a_raw, const void *b_raw) {
             DNSKEY *dnskey_a = &a.rr->data.dnskey;
             DNSKEY *dnskey_b = &b.rr->data.dnskey;
 
-            result = memcmp(dnskey_a->rdata, dnskey_b->rdata, MIN(dnskey_a->rdata_length, dnskey_b->rdata_length));
+            result = memcmp(dnskey_a->data, dnskey_b->data, MIN(dnskey_a->data_length, dnskey_b->data_length));
             if (result != 0) return result;
 
-            if (dnskey_a->rdata_length > dnskey_b->rdata_length) return +1;
-            if (dnskey_a->rdata_length < dnskey_b->rdata_length) return -1;
+            if (dnskey_a->data_length > dnskey_b->data_length) return +1;
+            if (dnskey_a->data_length < dnskey_b->data_length) return -1;
             FATAL("Duplicate RR are not allowed");
         }
         default: FATAL("TODO: domains are equal, compare RDATA");
@@ -194,6 +194,12 @@ const EVP_MD *get_ds_digest_algorithm(uint8_t algorithm) {
         case DIGEST_SHA384: return EVP_sha384();
         default:            return NULL;
     }
+}
+
+int get_ds_digest_size(uint8_t algorithm) {
+    const EVP_MD *md = get_ds_digest_algorithm(algorithm);
+    if (md == NULL) return -1;
+    return EVP_MD_get_size(md);
 }
 
 const EVP_MD *get_rrsig_digest_algorithm(uint8_t algorithm) {

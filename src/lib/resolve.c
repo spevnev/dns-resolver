@@ -416,7 +416,7 @@ static bool get_dnskeys(Query *query, Zone *zone) {
         size_t canonical_length = domain_to_canonical(dnskey_rr->domain, canonical_domain);
         if (!EVP_DigestInit_ex(ctx, ds_digest_algorithm, NULL)
             || !EVP_DigestUpdate(ctx, canonical_domain, canonical_length)
-            || !EVP_DigestUpdate(ctx, dnskey->rdata, dnskey->rdata_length)
+            || !EVP_DigestUpdate(ctx, dnskey->data, dnskey->data_length)
             || !EVP_DigestFinal_ex(ctx, digest, &digest_size)) {
             goto exit;
         }
@@ -442,7 +442,7 @@ static bool get_dnskeys(Query *query, Zone *zone) {
     if ((rrsig_digest_algorithm = get_rrsig_digest_algorithm(verified_dnskey->algorithm)) == NULL) goto exit;
     if ((pkey = load_dnskey(verified_dnskey)) == NULL) goto exit;
     if (EVP_DigestVerifyInit(ctx, NULL, rrsig_digest_algorithm, NULL, pkey) != 1) goto exit;
-    if (EVP_DigestVerifyUpdate(ctx, rrsig->rdata, rrsig->rdata_length) != 1) goto exit;
+    if (EVP_DigestVerifyUpdate(ctx, rrsig->data, rrsig->data_length) != 1) goto exit;
 
     if (!sort_rr_vec_canonically(dnskeys)) goto exit;
 
@@ -454,14 +454,14 @@ static bool get_dnskeys(Query *query, Zone *zone) {
         uint16_t type_net = htons(dnskey_rr->type);
         uint16_t class_net = htons(CLASS_IN);
         uint32_t ttl_net = htonl(rrsig->original_ttl);
-        uint16_t rdata_length_net = htons(dnskey->rdata_length);
+        uint16_t rdata_length_net = htons(dnskey->data_length);
 
         if (EVP_DigestVerifyUpdate(ctx, canonical_domain, canonical_length) != 1
             || EVP_DigestVerifyUpdate(ctx, &type_net, sizeof(type_net)) != 1
             || EVP_DigestVerifyUpdate(ctx, &class_net, sizeof(class_net)) != 1
             || EVP_DigestVerifyUpdate(ctx, &ttl_net, sizeof(ttl_net)) != 1
             || EVP_DigestVerifyUpdate(ctx, &rdata_length_net, sizeof(rdata_length_net)) != 1
-            || EVP_DigestVerifyUpdate(ctx, dnskey->rdata, dnskey->rdata_length) != 1) {
+            || EVP_DigestVerifyUpdate(ctx, dnskey->data, dnskey->data_length) != 1) {
             goto exit;
         }
     }

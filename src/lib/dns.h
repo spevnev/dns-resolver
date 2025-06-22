@@ -39,6 +39,9 @@
 #define TYPE_DNSKEY 48
 #define QTYPE_ANY 255
 
+#define OPTION_HEADER_SIZE 4
+#define DNSKEY_HEADER_SIZE 4
+
 // https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-6
 #define RCODE_SUCCESS 0
 #define RCODE_FORMAT_ERROR 1
@@ -51,8 +54,6 @@
 
 // https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-14
 #define EDNS_VERSION 0
-
-#define OPTION_HEADER_SIZE 4
 
 // https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-11
 #define OPT_COOKIE 10
@@ -95,14 +96,6 @@ typedef struct {
     uint16_t additional_count;
 } DNSHeader;
 
-typedef struct {
-    char *buffer;
-    uint32_t length;
-    uint32_t capacity;
-    // Dynamic array of string which are stored in the buffer.
-    char **data;
-} TXT;
-
 // Struct to interpret OPT RR's ttl field (in network order).
 typedef struct {
     uint8_t extended_rcode;
@@ -120,10 +113,36 @@ typedef struct {
 } DNSCookies;
 
 typedef struct {
+    char *master_name;
+    char *rname;
+    uint32_t serial;
+    uint32_t refresh;
+    uint32_t retry;
+    uint32_t expire;
+    uint32_t negative_ttl;
+} SOA;
+
+typedef struct {
+    char *buffer;
+    uint32_t length;
+    uint32_t capacity;
+    // Dynamic array of string which are stored in the buffer.
+    char **data;
+} TXT;
+
+typedef struct {
     uint16_t udp_payload_size;
     uint8_t extended_rcode;
     DNSCookies cookies;
 } OPT;
+
+typedef struct {
+    uint16_t key_tag;
+    uint8_t algorithm;
+    uint8_t digest_algorithm;
+    uint8_t *digest;
+    size_t digest_size;
+} DS;
 
 typedef struct {
     uint16_t type_covered;
@@ -136,8 +155,9 @@ typedef struct {
     char *signer_name;
     uint8_t *signature;
     size_t signature_size;
-    uint8_t *rdata;
-    uint16_t rdata_length;
+    // Data does not include the signature since it is only used to verify it.
+    uint8_t *data;
+    uint16_t data_length;
 } RRSIG;
 
 typedef struct {
@@ -155,8 +175,8 @@ typedef struct {
     uint8_t *key;
     size_t key_size;
     uint16_t key_tag;
-    uint8_t *rdata;
-    uint16_t rdata_length;
+    uint8_t *data;
+    uint16_t data_length;
 } DNSKEY;
 
 typedef struct {
@@ -166,15 +186,7 @@ typedef struct {
     union {
         in_addr_t ip4_addr;
         char *domain;
-        struct {
-            char *master_name;
-            char *rname;
-            uint32_t serial;
-            uint32_t refresh;
-            uint32_t retry;
-            uint32_t expire;
-            uint32_t negative_ttl;
-        } soa;
+        SOA soa;
         struct {
             char *cpu;
             char *os;
@@ -182,13 +194,7 @@ typedef struct {
         TXT txt;
         struct in6_addr ip6_addr;
         OPT opt;
-        struct {
-            uint16_t key_tag;
-            uint8_t algorithm;
-            uint8_t digest_algorithm;
-            uint8_t *digest;
-            size_t digest_size;
-        } ds;
+        DS ds;
         RRSIG rrsig;
         DNSKEY dnskey;
     } data;

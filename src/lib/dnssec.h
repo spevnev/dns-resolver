@@ -6,6 +6,7 @@
 #include "dns.h"
 
 const EVP_MD *get_ds_digest_algorithm(uint8_t algorithm);
+int get_ds_digest_size(uint8_t algorithm);
 const EVP_MD *get_rrsig_digest_algorithm(uint8_t algorithm);
 
 EVP_PKEY *load_dnskey(const DNSKEY *dnskey);
