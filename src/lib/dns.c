@@ -5,11 +5,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <sys/random.h>
 #include "encode.h"
 #include "vector.h"
 
+static const size_t LABEL_SIZE = 64;
 static const uint8_t LABEL_DATA_MASK = 63;      // 00111111
 static const uint8_t LABEL_TYPE_MASK = 192;     // 11000000
 static const uint8_t LABEL_TYPE_POINTER = 192;  // 11000000
@@ -39,20 +39,16 @@ static bool write_u16(Request *request, uint16_t value) {
 }
 
 static bool write_domain(Request *request, const char *domain) {
-    // Handle root domain.
-    if (domain[0] == '\0') return write_u8(request, 0);
+    if (is_root_domain(domain)) return write_u8(request, 0);
 
     const char *start = domain;
-    const char *cur = domain;
-    for (;;) {
-        if (*cur == '.' || *cur == '\0') {
+    for (const char *cur = domain; *cur != '\0'; cur++) {
+        if (*cur == '.') {
             uint8_t length = cur - start;
             if (!write_u8(request, length)) return false;
             if (!write(request, start, length)) return false;
             start = cur + 1;
         }
-        if (*cur == '\0') break;
-        cur++;
     }
     return write_u8(request, 0);
 }
@@ -80,15 +76,27 @@ static bool read_u32(Response *response, uint32_t *out) {
     return true;
 }
 
+static void to_lowercase(const char *in, char *out, size_t length) {
+    for (size_t i = 0; i < length; i++) {
+        if ('A' <= in[i] && in[i] <= 'Z') {
+            out[i] = in[i] - 'A' + 'a';
+        } else {
+            out[i] = in[i];
+        }
+    }
+}
+
 static bool read_domain_rec(Response *response, bool allow_compression, char *output_buffer, int buffer_size) {
     // Handle root domain.
     if (response->buffer[response->current] == 0) {
-        *output_buffer = '\0';
+        output_buffer[0] = '.';
+        output_buffer[1] = '\0';
         response->current++;
         return true;
     }
 
     char *out = output_buffer;
+    char label[LABEL_SIZE];
     for (;;) {
         uint8_t byte;
         if (!read_u8(response, &byte)) return false;
@@ -98,16 +106,16 @@ static bool read_domain_rec(Response *response, bool allow_compression, char *ou
         if (type == LABEL_TYPE_NORMAL) {
             uint8_t label_len = data;
             if (label_len == 0) {
-                // End of domain, remove trailing dot.
-                *(out - 1) = '\0';
+                *out = '\0';
                 return true;
             }
-            if (response->current + label_len > response->length) return false;
-            if (label_len + 1 > buffer_size) return false;
+
+            // Check that there is enough space for label, dot, and null terminator.
+            if (label_len + 2 > buffer_size) return false;
             buffer_size -= label_len + 1;
 
-            memcpy(out, response->buffer + response->current, label_len);
-            response->current += label_len;
+            if (!read(response, label, label_len)) return false;
+            to_lowercase(label, out, label_len);
             out += label_len;
             *(out++) = '.';
         } else if (allow_compression && type == LABEL_TYPE_POINTER) {
@@ -225,8 +233,28 @@ static const char *type_to_str(uint16_t type) {
     }
 }
 
+bool is_root_domain(const char *domain) { return domain[0] == '.' && domain[1] == '\0'; }
+
+char *fully_qualify_domain(const char *domain) {
+    size_t domain_len = strlen(domain);
+    if (domain_len > MAX_DOMAIN_LENGTH) return NULL;
+
+    char *fqd = malloc(domain_len + 2);
+    if (fqd == NULL) return NULL;
+    to_lowercase(domain, fqd, domain_len);
+
+    bool is_fully_qualified = domain_len >= 1 && domain[domain_len - 1] == '.';
+    if (!is_fully_qualified) {
+        fqd[domain_len] = '.';
+        domain_len++;
+    }
+    fqd[domain_len] = '\0';
+
+    return fqd;
+}
+
 void print_rr(RR *rr) {
-    printf("%-24s %-8u %-6s ", rr->domain[0] == '\0' ? "." : rr->domain, rr->ttl, type_to_str(rr->type));
+    printf("%-24s %-8u %-6s ", rr->domain, rr->ttl, type_to_str(rr->type));
     switch (rr->type) {
         case TYPE_A: {
             char addr_buffer[INET_ADDRSTRLEN];
@@ -390,7 +418,7 @@ bool validate_question(Response *response, uint16_t request_qtype, const char *r
     char *domain;
     if (!read_domain(response, true, &domain)) return false;
 
-    int result = strcasecmp(domain, request_domain);
+    int result = strcmp(domain, request_domain);
     free(domain);
     if (result != 0) return false;
 
@@ -473,7 +501,7 @@ bool read_rr(Response *response, RR **rr_out) {
             response->current += sizeof(rr->data.ip6_addr);
             break;
         case TYPE_OPT: {
-            if (rr->domain[0] != 0) goto error;
+            if (!is_root_domain(rr->domain)) goto error;
 
             rr->data.opt.udp_payload_size = MAX(class, STANDARD_UDP_PAYLOAD_SIZE);
 

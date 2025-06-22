@@ -12,7 +12,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -78,27 +77,41 @@ static void add_nameserver(Zone *zone, in_addr_t addr) {
     VECTOR_PUSH(&zone->nameservers, nameserver);
 }
 
-static void add_root_zone(Query *query) {
-    Zone zone = {.domain = ""};
+static void free_zone(Zone *zone) {
+    for (uint32_t j = 0; j < zone->nameserver_domains.length; j++) free(zone->nameserver_domains.data[j]);
+    VECTOR_FREE(&zone->nameserver_domains);
+    VECTOR_FREE(&zone->nameservers);
+    free_rr_vec(zone->dss);
+    free_rr_vec(zone->dnskeys);
+}
+
+static bool add_root_zone(Query *query) {
+    Zone zone = {.domain = "."};
 
     in_addr_t ip_addr;
     for (size_t i = 0; i < ROOT_IP_ADDRS_COUNT; i++) {
-        int result = inet_pton(AF_INET, ROOT_IP_ADDRS[i], &ip_addr);
-        assert(result == 1);
+        if (inet_pton(AF_INET, ROOT_IP_ADDRS[i], &ip_addr) != 1) goto error;
         add_nameserver(&zone, ip_addr);
     }
 
     if (query->enable_dnssec) {
         for (size_t i = 0; i < ROOT_DNSKEYS_COUNT; i++) {
             RR *rr = malloc(sizeof(*rr));
-            if (rr == NULL) OUT_OF_MEMORY();
+            if (rr == NULL) goto error;
             memcpy(rr, &ROOT_DNSKEYS[i], sizeof(*rr));
 
             rr->domain = strdup(rr->domain);
-            if (rr->domain == NULL) OUT_OF_MEMORY();
+            if (rr->domain == NULL) {
+                free(rr);
+                goto error;
+            }
 
             rr->data.dnskey.key = malloc(rr->data.dnskey.key_size);
-            if (rr->data.dnskey.key == NULL) OUT_OF_MEMORY();
+            if (rr->data.dnskey.key == NULL) {
+                free(rr->domain);
+                free(rr);
+                goto error;
+            }
             memcpy(rr->data.dnskey.key, ROOT_DNSKEYS[i].data.dnskey.key, rr->data.dnskey.key_size);
 
             VECTOR_PUSH(&zone.dnskeys, rr);
@@ -106,14 +119,10 @@ static void add_root_zone(Query *query) {
     }
 
     VECTOR_PUSH(&query->zones, zone);
-}
-
-static void free_zone(Zone *zone) {
-    for (uint32_t j = 0; j < zone->nameserver_domains.length; j++) free(zone->nameserver_domains.data[j]);
-    VECTOR_FREE(&zone->nameserver_domains);
-    VECTOR_FREE(&zone->nameservers);
-    free_rr_vec(zone->dss);
-    free_rr_vec(zone->dnskeys);
+    return true;
+error:
+    free_zone(&zone);
+    return false;
 }
 
 static bool is_whitespace(char ch) { return ch == ' ' || ch == '\t'; }
@@ -159,13 +168,13 @@ not_found:
     add_nameserver(zone, ip_addr);
 }
 
-static bool set_timeout(int fd, uint64_t timeout_ns) {
+static bool set_timeout(const Query *query) {
     struct timeval tv = {
-        .tv_sec = timeout_ns / NS_IN_SEC,
-        .tv_usec = (timeout_ns % NS_IN_SEC) / NS_IN_US,
+        .tv_sec = query->udp_timeout_ns / NS_IN_SEC,
+        .tv_usec = (query->udp_timeout_ns % NS_IN_SEC) / NS_IN_US,
     };
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) return false;
-    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) return false;
+    if (setsockopt(query->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) return false;
+    if (setsockopt(query->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) return false;
     return true;
 }
 
@@ -189,7 +198,7 @@ static bool update_query_timeout(Query *query, bool *timed_out) {
     query->time_ns = current_time_ns;
 
     if (query->time_left_ns < query->udp_timeout_ns) {
-        if (!set_timeout(query->fd, query->udp_timeout_ns)) return false;
+        if (!set_timeout(query)) return false;
         query->udp_timeout_ns = query->time_left_ns;
     }
     return true;
@@ -229,7 +238,7 @@ static bool choose_nameserver(Query *query, const char *sname, size_t *zone_inde
     for (;;) {
         for (int i = query->zones.length - 1; i >= 0; i--) {
             Zone *zone = &query->zones.data[i];
-            if (zone->is_being_resolved || strcasecmp(zone->domain, sname) != 0) continue;
+            if (zone->is_being_resolved || strcmp(zone->domain, sname) != 0) continue;
 
             // If there are resolved nameservers, return a random one.
             if (zone->nameservers.length > 0) {
@@ -279,9 +288,9 @@ static bool choose_nameserver(Query *query, const char *sname, size_t *zone_inde
         }
 
         // No zone for current domain, try parent domain.
-        if (*sname == '\0') return false;
+        if (is_root_domain(sname)) return false;
         while (*sname != '\0' && *sname != '.') sname++;
-        if (*sname == '.') sname++;
+        if (!is_root_domain(sname)) sname++;
     }
 }
 
@@ -300,7 +309,7 @@ static bool is_subdomain(const char *subdomain, const char *domain) {
     if (subdomain_length < domain_length) return false;
 
     size_t subdomain_prefix_length = subdomain_length - domain_length;
-    return strcasecmp(subdomain + subdomain_prefix_length, domain) == 0;
+    return strcmp(subdomain + subdomain_prefix_length, domain) == 0;
 }
 
 static bool follow_cnames(RRVec *rrs, char sname[static DOMAIN_SIZE], uint16_t qtype, RRVec *result) {
@@ -310,7 +319,7 @@ static bool follow_cnames(RRVec *rrs, char sname[static DOMAIN_SIZE], uint16_t q
         restart = false;
         for (uint32_t i = 0; i < rrs->length; i++) {
             RR *rr = rrs->data[i];
-            if (strcasecmp(rr->domain, sname) != 0) continue;
+            if (strcmp(rr->domain, sname) != 0) continue;
 
             if (rr->type == qtype) {
                 VECTOR_REMOVE(rrs, i);
@@ -332,45 +341,33 @@ static bool follow_cnames(RRVec *rrs, char sname[static DOMAIN_SIZE], uint16_t q
 }
 
 static size_t domain_to_canonical(const char *domain, uint8_t output_buffer[static DOMAIN_SIZE]) {
-    // Handle root domain.
-    if (domain[0] == '\0') {
+    if (is_root_domain(domain)) {
         *output_buffer = 0;
         return 1;
     }
 
     uint8_t *out = output_buffer;
     const char *start = domain;
-    const char *cur = domain;
-    for (;;) {
-        if (*cur == '.' || *cur == '\0') {
+    for (const char *cur = domain; *cur != '\0'; cur++) {
+        if (*cur == '.') {
             uint8_t length = cur - start;
             *out++ = length;
-
-            for (uint8_t i = 0; i < length; i++) {
-                if ('A' <= start[i] && start[i] <= 'Z') {
-                    out[i] = start[i] - 'A' + 'a';
-                } else {
-                    out[i] = start[i];
-                }
-            }
-
+            memcpy(out, start, length);
             out += length;
             start = cur + 1;
         }
-        if (*cur == '\0') break;
-        cur++;
     }
     *out++ = 0;
+
     return out - output_buffer;
 }
 
 static uint8_t get_domain_labels_num(const char *domain) {
-    if (*domain == '\0') return 0;
+    if (is_root_domain(domain)) return 0;
 
-    uint8_t labels = 1;
-    while (*domain != '\0') {
-        if (*domain == '.') labels++;
-        domain++;
+    uint8_t labels = 0;
+    for (const char *cur = domain; *cur != '\0'; cur++) {
+        if (*cur == '.') labels++;
     }
     return labels;
 }
@@ -434,12 +431,12 @@ static bool get_dnskeys(Query *query, Zone *zone) {
 
     time_t time_now = time(NULL);
     if (!(rrsig->inception_time <= time_now && time_now <= rrsig->expiration_time)) goto exit;
-    if (strcasecmp(rrsig_rr->domain, verified_dnskey_rr->domain) != 0) goto exit;
+    if (strcmp(rrsig_rr->domain, verified_dnskey_rr->domain) != 0) goto exit;
     if (rrsig->type_covered != TYPE_DNSKEY) goto exit;
-    if (strcasecmp(rrsig->signer_name, zone->domain) != 0) goto exit;
+    if (strcmp(rrsig->signer_name, zone->domain) != 0) goto exit;
     if (rrsig->algorithm != verified_dnskey->algorithm) goto exit;
     if (rrsig->key_tag != verified_dnskey->key_tag) goto exit;
-    if (strcasecmp(rrsig_rr->domain, verified_dnskey_rr->domain) != 0) goto exit;
+    if (strcmp(rrsig_rr->domain, verified_dnskey_rr->domain) != 0) goto exit;
     if (rrsig->labels > get_domain_labels_num(verified_dnskey_rr->domain)) goto exit;
 
     if ((rrsig_digest_algorithm = get_rrsig_digest_algorithm(verified_dnskey->algorithm)) == NULL) goto exit;
@@ -507,20 +504,8 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
         goto nameserver_error;                            \
     } while (0)
 
-    size_t domain_len = strlen(domain);
-    if (domain[domain_len - 1] == '.') domain_len--;
-    if (domain_len > 0 && domain[domain_len - 1] == '.') {
-        if (query->verbose) fprintf(stderr, "Invalid domain name, multiple trailing dots.\n");
-        return false;
-    }
-    if (domain_len > MAX_DOMAIN_LENGTH) {
-        if (query->verbose) fprintf(stderr, "Invalid domain name, maximum length is %d.\n", MAX_DOMAIN_LENGTH);
-        return false;
-    }
-
     char sname[DOMAIN_SIZE];
-    memcpy(sname, domain, domain_len);
-    sname[domain_len] = '\0';
+    memcpy(sname, domain, strlen(domain) + 1);
 
     bool found = false;
     bool timed_out = false;
@@ -611,7 +596,7 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
                 if (!read_rr(&response, &rr)) NAMESERVER_ERROR("Invalid resource record.\n");
                 if (query->verbose) print_rr(rr);
 
-                if (strcasecmp(rr->domain, sname) != 0) {
+                if (strcmp(rr->domain, sname) != 0) {
                     VECTOR_PUSH(&prev_rrs, rr);
                     // Set to NULL to avoid freeing it.
                     rr = NULL;
@@ -653,7 +638,7 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
                         memset(&authority_zone, 0, sizeof(authority_zone));
 
                         memcpy(authority_zone.domain, rr->domain, strlen(rr->domain) + 1);
-                    } else if (strcasecmp(authority_zone.domain, rr->domain) != 0) {
+                    } else if (strcmp(authority_zone.domain, rr->domain) != 0) {
                         NAMESERVER_ERROR("Authority section should refer to a single zone but found many.\n");
                     }
 
@@ -706,7 +691,7 @@ static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool i
                 if (rr->type != TYPE_A) continue;
 
                 for (uint32_t j = 0; j < authority_zone.nameserver_domains.length; j++) {
-                    if (strcasecmp(authority_zone.nameserver_domains.data[j], rr->domain) == 0) {
+                    if (strcmp(authority_zone.nameserver_domains.data[j], rr->domain) == 0) {
                         free(authority_zone.nameserver_domains.data[j]);
                         VECTOR_REMOVE(&authority_zone.nameserver_domains, j);
                         add_nameserver(&authority_zone, rr->data.ip4_addr);
@@ -765,19 +750,9 @@ bool resolve(const char *domain, uint16_t qtype, const char *nameserver, uint16_
              uint32_t flags, RRVec *result) {
     if (result == NULL || domain == NULL) return false;
 
-    srand(time(NULL));
-
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd == -1) return false;
-
-    uint64_t udp_timeout_ns = MAX(timeout_ms / 5, MIN_QUERY_TIMEOUT_MS) * NS_IN_MS;
-    if (!set_timeout(fd, udp_timeout_ns)) {
-        close(fd);
-        return false;
-    }
-
+    bool found = false;
     Query query = {
-        .fd = fd,
+        .fd = -1,
         .port = port,
         .recursion_desired = !(flags & RESOLVE_DISABLE_RDFLAG),
         .enable_edns = !(flags & RESOLVE_DISABLE_EDNS),
@@ -785,33 +760,49 @@ bool resolve(const char *domain, uint16_t qtype, const char *nameserver, uint16_
         .enable_dnssec = !(flags & RESOLVE_DISABLE_DNSSEC),
         .verbose = flags & RESOLVE_VERBOSE,
         .time_ns = get_time_ns(),
-        .udp_timeout_ns = udp_timeout_ns,
+        .udp_timeout_ns = MAX(timeout_ms / 5, MIN_QUERY_TIMEOUT_MS) * NS_IN_MS,
         .time_left_ns = timeout_ms * NS_IN_MS,
         .zones = {0},
     };
 
+    if ((query.fd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) goto exit;
+
+    srand(time(NULL));
+    if (!set_timeout(&query)) goto exit;
+
     // Load root nameservers in case provided nameserver cannot answer the query.
-    if (!(flags & RESOLVE_NO_ROOT_NS)) add_root_zone(&query);
+    if (!(flags & RESOLVE_NO_ROOT_NS) && !add_root_zone(&query)) goto exit;
 
     // Create a zone of initial nameservers.
     in_addr_t ip_addr;
-    Zone zone = {.domain = ""};
+    Zone zone = {.domain = "."};
     if (nameserver == NULL) {
         load_resolve_config(&zone);
     } else if (inet_pton(AF_INET, nameserver, &ip_addr) == 1) {
         add_nameserver(&zone, ip_addr);
     } else {
-        char *nameserver_dup = strdup(nameserver);
-        if (nameserver_dup == NULL) OUT_OF_MEMORY();
-        VECTOR_PUSH(&zone.nameserver_domains, nameserver_dup);
+        char *nameserver_fqd = fully_qualify_domain(nameserver);
+        if (nameserver_fqd == NULL) {
+            if (query.verbose) fprintf(stderr, "Invalid nameserver domain \"%s\".\n", nameserver);
+            goto exit;
+        }
+        VECTOR_PUSH(&zone.nameserver_domains, nameserver_fqd);
     }
     VECTOR_PUSH(&query.zones, zone);
 
-    bool found = resolve_rec(&query, domain, qtype, false, result);
+    char *fqd = fully_qualify_domain(domain);
+    if (fqd == NULL) {
+        if (query.verbose) fprintf(stderr, "Invalid domain \"%s\".\n", domain);
+        goto exit;
+    }
 
+    found = resolve_rec(&query, fqd, qtype, false, result);
+    free(fqd);
+
+exit:
+    close(query.fd);
     for (uint32_t i = 0; i < query.zones.length; i++) free_zone(&query.zones.data[i]);
     VECTOR_FREE(&query.zones);
-    close(fd);
     return found;
 }
 

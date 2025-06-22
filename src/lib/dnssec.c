@@ -8,7 +8,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include "dns.h"
 
 typedef struct {
@@ -145,7 +144,7 @@ static int canonical_order_comparator(const void *a_raw, const void *b_raw) {
     int result = 0;
     int i = a.labels.length - 1, j = b.labels.length - 1;
     while (result == 0 && i >= 0 && j >= 0) {
-        result = strcasecmp(a.labels.data[i], b.labels.data[j]);
+        result = strcmp(a.labels.data[i], b.labels.data[j]);
         i--;
         j--;
     }
@@ -165,16 +164,16 @@ static int canonical_order_comparator(const void *a_raw, const void *b_raw) {
             if (dnskey_a->rdata_length < dnskey_b->rdata_length) return -1;
             FATAL("Duplicate RR are not allowed");
         }
-        default:
-            FATAL("TODO: domains are equal, compare RDATA");
+        default: FATAL("TODO: domains are equal, compare RDATA");
     }
 }
 
 static bool domain_to_labels(const char *domain, StrVec *labels) {
+    if (is_root_domain(domain)) return true;
+
     const char *start = domain;
-    const char *cur = domain;
-    for (;;) {
-        if (*cur == '.' || *cur == '\0') {
+    for (const char *cur = domain; *cur != '\0'; cur++) {
+        if (*cur == '.') {
             size_t length = cur - start;
             char *label = malloc(length + 1);
             if (label == NULL) return false;
@@ -184,10 +183,7 @@ static bool domain_to_labels(const char *domain, StrVec *labels) {
             VECTOR_PUSH(labels, label);
             start = cur + 1;
         }
-        if (*cur == '\0') break;
-        cur++;
     }
-
     return true;
 }
 

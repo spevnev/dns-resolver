@@ -11,7 +11,7 @@ int main(void) {
     ASSERT(result.length == 1);
     RR *rr = result.data[0];
     ASSERT(rr->type == TYPE_CNAME);
-    ASSERT(strcmp(rr->data.domain, "result.cname." TEST_DOMAIN) == 0);
+    ASSERT(strcmp(rr->data.domain, "result.cname." TEST_DOMAIN ".") == 0);
 
     free_rr_vec(result);
     return EXIT_SUCCESS;

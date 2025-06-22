@@ -13,7 +13,7 @@ int main(void) {
     for (uint32_t i = 0; i < result.length; i++) {
         RR *rr = result.data[i];
         ASSERT(rr->type == TYPE_NS);
-        ASSERT(strcmp(rr->data.domain + 1, ".root-servers.net") == 0);
+        ASSERT(strcmp(rr->data.domain + 1, ".root-servers.net.") == 0);
     }
 
     free_rr_vec(result);

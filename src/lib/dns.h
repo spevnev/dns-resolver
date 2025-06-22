@@ -208,6 +208,9 @@ typedef struct {
     uint32_t current;
 } Response;
 
+bool is_root_domain(const char *domain);
+char *fully_qualify_domain(const char *domain);
+
 void print_rr(RR *rr);
 void free_rr(RR *rr);
 

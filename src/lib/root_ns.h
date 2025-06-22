@@ -13,7 +13,7 @@ __attribute__((unused)) static const char *ROOT_IP_ADDRS[] = {
 // https://data.iana.org/root-anchors/root-anchors.xml
 __attribute__((unused)) static const RR ROOT_DNSKEYS[] = {
     {
-        .domain = "",
+        .domain = ".",
         .ttl = 0,
         .type = TYPE_DNSKEY,
         .data.dnskey = {
@@ -27,7 +27,7 @@ __attribute__((unused)) static const RR ROOT_DNSKEYS[] = {
         },
     },
     {
-        .domain = "",
+        .domain = ".",
         .ttl = 0,
         .type = TYPE_DNSKEY,
         .data.dnskey = {

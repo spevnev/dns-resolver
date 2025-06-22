@@ -23,8 +23,8 @@ int main(void) {
     ASSERT(result.length == 1);
     RR *rr = result.data[0];
     ASSERT(rr->type == TYPE_SOA);
-    ASSERT(strcmp(rr->data.soa.master_name, "a.test.com") == 0);
-    ASSERT(strcmp(rr->data.soa.rname, "b.test.com") == 0);
+    ASSERT(strcmp(rr->data.soa.master_name, "a.test.com.") == 0);
+    ASSERT(strcmp(rr->data.soa.rname, "b.test.com.") == 0);
     ASSERT(rr->data.soa.serial == 1);
     ASSERT(rr->data.soa.refresh == 2);
     ASSERT(rr->data.soa.retry == 3);
