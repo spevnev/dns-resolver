@@ -167,13 +167,14 @@ error:
 static bool read_char_string(Response *response, char **string_out) {
     uint8_t length;
     if (!read_u8(response, &length)) return false;
-    if (response->current + length > response->length) return false;
 
     char *string = malloc((length + 1) * sizeof(*string));
     if (string == NULL) return false;
 
-    memcpy(string, response->buffer + response->current, length);
-    response->current += length;
+    if (!read(response, string, length)) {
+        free(string);
+        return false;
+    }
     string[length] = '\0';
 
     *string_out = string;
@@ -238,7 +239,7 @@ static bool read_opt_data(Response *response, uint16_t data_length, OPT *opt) {
 
 static bool read_ds_data(Response *response, DS *ds) {
     if (!read_u16(response, &ds->key_tag)) goto error;
-    if (!read_u8(response, &ds->algorithm)) goto error;
+    if (!read_u8(response, &ds->signing_algorithm)) goto error;
     if (!read_u8(response, &ds->digest_algorithm)) goto error;
     if ((ds->digest_size = get_ds_digest_size(ds->digest_algorithm)) <= 0) goto error;
     if ((ds->digest = malloc(ds->digest_size)) == NULL) goto error;
@@ -278,6 +279,43 @@ error:
     return false;
 }
 
+static bool read_rr_type_bitmap(Response *response, uint16_t data_length, RRTypeVec *types) {
+    uint8_t window_block, bitmap_length;
+    uint8_t bitmap[32];
+    while (data_length > 0) {
+        if (!read_u8(response, &window_block)) return false;
+        if (!read_u8(response, &bitmap_length)) return false;
+        if (!(1 <= bitmap_length && bitmap_length <= 32)) return false;
+        if (!read(response, bitmap, bitmap_length)) return false;
+        data_length -= 2 + bitmap_length;
+
+        RRType type_upper_half = ((RRType) window_block) << 8;
+        for (uint32_t i = 0; i < bitmap_length; i++) {
+            for (int j = 0; j < 8; j++) {
+                if (bitmap[i] & 0x80) {
+                    RRType type = type_upper_half | (i * 8 + j);
+                    VECTOR_PUSH(types, type);
+                }
+                bitmap[i] <<= 1;
+            }
+        }
+    }
+    return true;
+}
+
+static bool read_nsec_data(Response *response, uint16_t data_length, NSEC *nsec) {
+    uint32_t offset_before_data = response->current;
+    if (!read_domain(response, false, &nsec->next_domain)) return false;
+
+    data_length -= response->current - offset_before_data;
+    if (!read_rr_type_bitmap(response, data_length, &nsec->types)) {
+        free(nsec->next_domain);
+        return false;
+    }
+
+    return true;
+}
+
 static bool read_dnskey_data(Response *response, uint16_t data_length, DNSKEY *dnskey) {
     const uint8_t *data_pointer = response->buffer + response->current;
 
@@ -304,7 +342,32 @@ error:
     return false;
 }
 
-static const char *type_to_str(uint16_t type) {
+static bool read_nsec3_data(Response *response, uint16_t data_length, NSEC3 *nsec) {
+    uint32_t offset_before_data = response->current;
+    if (!read_u8(response, &nsec->algorithm)) goto error;
+    if (!read(response, &nsec->flags, sizeof(nsec->flags))) goto error;
+    if (!read_u16(response, &nsec->iterations)) goto error;
+    if (!read_u8(response, &nsec->salt_length)) goto error;
+    if (nsec->salt_length > 0) {
+        if ((nsec->salt = malloc(nsec->salt_length)) == NULL) goto error;
+        if (!read(response, nsec->salt, nsec->salt_length)) goto error;
+    }
+    if (!read_u8(response, &nsec->hash_length)) goto error;
+    if (nsec->hash_length == 0) goto error;
+    if ((nsec->next_domain_hash = malloc(nsec->hash_length)) == NULL) goto error;
+    if (!read(response, nsec->next_domain_hash, nsec->hash_length)) goto error;
+
+    data_length -= response->current - offset_before_data;
+    if (!read_rr_type_bitmap(response, data_length, &nsec->types)) goto error;
+
+    return true;
+error:
+    free(nsec->salt);
+    free(nsec->next_domain_hash);
+    return false;
+}
+
+static const char *type_to_str(RRType type) {
     switch (type) {
         case TYPE_A:      return "A";
         case TYPE_NS:     return "NS";
@@ -316,8 +379,14 @@ static const char *type_to_str(uint16_t type) {
         case TYPE_OPT:    return "OPT";
         case TYPE_DS:     return "DS";
         case TYPE_RRSIG:  return "RRSIG";
+        case TYPE_NSEC:   return "NSEC";
         case TYPE_DNSKEY: return "DNSKEY";
-        default:          return "unknown";
+        case TYPE_NSEC3:  return "NSEC3";
+        default:          {
+            static char buffer[10];
+            snprintf(buffer, sizeof(buffer), "TYPE%hu", type);
+            return buffer;
+        }
     }
 }
 
@@ -372,7 +441,8 @@ void print_rr(RR *rr) {
         } break;
         case TYPE_DS: {
             char *digest = hex_string_encode(rr->data.ds.digest, rr->data.ds.digest_size);
-            printf("%u %u %u %s", rr->data.ds.key_tag, rr->data.ds.algorithm, rr->data.ds.digest_algorithm, digest);
+            printf("%u %u %u %s", rr->data.ds.key_tag, rr->data.ds.signing_algorithm, rr->data.ds.digest_algorithm,
+                   digest);
             free(digest);
         } break;
         case TYPE_RRSIG: {
@@ -382,11 +452,33 @@ void print_rr(RR *rr) {
                    rr->data.rrsig.inception_time, rr->data.rrsig.key_tag, rr->data.rrsig.signer_name, signature);
             free(signature);
         } break;
+        case TYPE_NSEC:
+            printf("%s (", rr->data.nsec.next_domain);
+            for (uint32_t i = 0; i < rr->data.nsec.types.length; i++) {
+                if (i > 0) printf(" ");
+                printf("%s", type_to_str(rr->data.nsec.types.data[i]));
+            }
+            printf(")");
+            break;
         case TYPE_DNSKEY: {
             char *key = base64_encode(rr->data.dnskey.key, rr->data.dnskey.key_size);
             printf("%u %u %u %s", ntohs(rr->data.dnskey.flags), rr->data.dnskey.protocol, rr->data.dnskey.protocol,
                    key);
             free(key);
+        } break;
+        case TYPE_NSEC3: {
+            char *salt = "-";
+            if (rr->data.nsec3.salt != NULL) salt = hex_string_encode(rr->data.nsec3.salt, rr->data.nsec3.salt_length);
+            char *hash = base32_encode(rr->data.nsec3.next_domain_hash, rr->data.nsec3.hash_length);
+            printf("%u %u %u %s %s (", rr->data.nsec3.algorithm, rr->data.nsec3.flags, rr->data.nsec3.iterations, salt,
+                   hash);
+            for (uint32_t i = 0; i < rr->data.nsec3.types.length; i++) {
+                if (i > 0) printf(" ");
+                printf("%s", type_to_str(rr->data.nsec3.types.data[i]));
+            }
+            printf(")");
+            if (rr->data.nsec3.salt != NULL) free(salt);
+            free(hash);
         } break;
     }
     printf("\n");
@@ -418,16 +510,24 @@ void free_rr(RR *rr) {
             free(rr->data.rrsig.signature);
             free(rr->data.rrsig.data);
             break;
+        case TYPE_NSEC:
+            free(rr->data.nsec.next_domain);
+            VECTOR_FREE(&rr->data.nsec.types);
+            break;
         case TYPE_DNSKEY:
             free(rr->data.dnskey.key);
             free(rr->data.dnskey.data);
+            break;
+        case TYPE_NSEC3:
+            free(rr->data.nsec3.salt);
+            free(rr->data.nsec3.next_domain_hash);
             break;
     }
     free(rr->domain);
     free(rr);
 }
 
-bool write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
+bool write_request(Request *request, bool recursion_desired, const char *domain, RRType qtype, bool enable_edns,
                    bool enable_cookie, bool enable_dnssec, uint16_t udp_payload_size, DNSCookies *cookies,
                    uint16_t *id_out) {
     uint16_t id;
@@ -502,7 +602,7 @@ bool read_response_header(Response *response, uint16_t request_id, DNSHeader *he
     return true;
 }
 
-bool validate_question(Response *response, uint16_t request_qtype, const char *request_domain) {
+bool validate_question(Response *response, RRType request_qtype, const char *request_domain) {
     char *domain;
     if (!read_domain(response, true, &domain)) return false;
 
@@ -510,7 +610,8 @@ bool validate_question(Response *response, uint16_t request_qtype, const char *r
     free(domain);
     if (result != 0) return false;
 
-    uint16_t qtype, qclass;
+    RRType qtype;
+    uint16_t qclass;
     if (!read_u16(response, &qtype)) return false;
     if (!read_u16(response, &qclass)) return false;
 
@@ -593,8 +694,14 @@ bool read_rr(Response *response, RR **rr_out) {
         case TYPE_RRSIG:
             if (!read_rrsig_data(response, data_length, &rr->data.rrsig)) goto error;
             break;
+        case TYPE_NSEC:
+            if (!read_nsec_data(response, data_length, &rr->data.nsec)) goto error;
+            break;
         case TYPE_DNSKEY:
             if (!read_dnskey_data(response, data_length, &rr->data.dnskey)) goto error;
+            break;
+        case TYPE_NSEC3:
+            if (!read_nsec3_data(response, data_length, &rr->data.nsec3)) goto error;
             break;
         default: goto error;
     }

@@ -365,7 +365,7 @@ exit:
     return result;
 }
 
-bool verify_rrsig(RRVec rr_vec, uint16_t rr_type, const RR *rrsig_rr, RRVec dnskeys, const char *zone_domain) {
+bool verify_rrsig(RRVec rr_vec, RRType rr_type, const RR *rrsig_rr, RRVec dnskeys, const char *zone_domain) {
     if (rr_vec.length == 0 || dnskeys.length == 0) return false;
 
     bool result = false;

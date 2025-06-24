@@ -12,7 +12,7 @@
 #define RESOLVE_NO_ROOT_NS (1U << 4)
 #define RESOLVE_VERBOSE (1U << 31)
 
-bool resolve(const char *domain, uint16_t qtype, const char *nameserver, uint16_t port, uint64_t timeout_ms,
+bool resolve(const char *domain, RRType qtype, const char *nameserver, uint16_t port, uint64_t timeout_ms,
              uint32_t flags, RRVec *result);
 void free_rr_vec(RRVec rr_vec);
 

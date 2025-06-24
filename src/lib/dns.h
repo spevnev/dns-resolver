@@ -36,7 +36,9 @@
 #define TYPE_OPT 41
 #define TYPE_DS 43
 #define TYPE_RRSIG 46
+#define TYPE_NSEC 47
 #define TYPE_DNSKEY 48
+#define TYPE_NSEC3 50
 #define QTYPE_ANY 255
 
 #define OPTION_HEADER_SIZE 4
@@ -72,6 +74,10 @@
 #define DIGEST_SHA384 4
 
 #define DNSKEY_PROTOCOL 3
+
+typedef uint16_t RRType;
+
+VECTOR_TYPEDEF(RRTypeVec, RRType);
 
 typedef struct {
     uint16_t id;
@@ -138,14 +144,14 @@ typedef struct {
 
 typedef struct {
     uint16_t key_tag;
-    uint8_t algorithm;
+    uint8_t signing_algorithm;
     uint8_t digest_algorithm;
     uint8_t *digest;
     int digest_size;
 } DS;
 
 typedef struct {
-    uint16_t type_covered;
+    RRType type_covered;
     uint8_t algorithm;
     uint8_t labels;
     uint32_t original_ttl;
@@ -159,6 +165,11 @@ typedef struct {
     uint8_t *data;
     uint16_t data_length;
 } RRSIG;
+
+typedef struct {
+    char *next_domain;
+    RRTypeVec types;
+} NSEC;
 
 typedef struct {
     union {
@@ -180,8 +191,25 @@ typedef struct {
 } DNSKEY;
 
 typedef struct {
+    uint8_t algorithm;
+    union {
+        struct {
+            uint8_t opt_out : 1;
+            uint8_t : 7;
+        };
+        uint8_t flags;
+    };
+    uint16_t iterations;
+    uint8_t salt_length;
+    uint8_t *salt;
+    uint8_t hash_length;
+    uint8_t *next_domain_hash;
+    RRTypeVec types;
+} NSEC3;
+
+typedef struct {
     char *domain;
-    uint16_t type;
+    RRType type;
     uint32_t ttl;
     union {
         in_addr_t ip4_addr;
@@ -196,7 +224,9 @@ typedef struct {
         OPT opt;
         DS ds;
         RRSIG rrsig;
+        NSEC nsec;
         DNSKEY dnskey;
+        NSEC3 nsec3;
     } data;
 } RR;
 
@@ -220,12 +250,12 @@ char *fully_qualify_domain(const char *domain);
 void print_rr(RR *rr);
 void free_rr(RR *rr);
 
-bool write_request(Request *request, bool recursion_desired, const char *domain, uint16_t qtype, bool enable_edns,
+bool write_request(Request *request, bool recursion_desired, const char *domain, RRType qtype, bool enable_edns,
                    bool enable_cookie, bool enable_dnssec, uint16_t udp_payload_size, DNSCookies *cookies,
                    uint16_t *id_out);
 
 bool read_response_header(Response *response, uint16_t request_id, DNSHeader *header_out);
-bool validate_question(Response *response, uint16_t request_qtype, const char *request_domain);
+bool validate_question(Response *response, RRType request_qtype, const char *request_domain);
 bool read_rr(Response *response, RR **rr_out);
 
 #endif  // DNS_H

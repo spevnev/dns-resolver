@@ -10,7 +10,7 @@
 #include "resolve.h"
 #include "root_ns.h"
 
-static uint16_t str_to_qtype(const char *str) {
+static RRType str_to_qtype(const char *str) {
     if (strcasecmp(str, "A") == 0) return TYPE_A;
     if (strcasecmp(str, "NS") == 0) return TYPE_NS;
     if (strcasecmp(str, "CNAME") == 0) return TYPE_CNAME;
@@ -20,7 +20,9 @@ static uint16_t str_to_qtype(const char *str) {
     if (strcasecmp(str, "AAAA") == 0) return TYPE_AAAA;
     if (strcasecmp(str, "DS") == 0) return TYPE_DS;
     if (strcasecmp(str, "RRSIG") == 0) return TYPE_RRSIG;
+    if (strcasecmp(str, "NSEC") == 0) return TYPE_NSEC;
     if (strcasecmp(str, "DNSKEY") == 0) return TYPE_DNSKEY;
+    if (strcasecmp(str, "NSEC3") == 0) return TYPE_NSEC3;
     if (strcasecmp(str, "ANY") == 0) return QTYPE_ANY;
     FATAL("Invalid or unsupported qtype \"%s\"", str);
 }
@@ -51,9 +53,9 @@ int main(int argc, char **argv) {
     }
 
     // Validate options.
-    uint16_t qtype = str_to_qtype(*qtype_str);
+    RRType qtype = str_to_qtype(*qtype_str);
     if (*timeout_s <= 0) FATAL("Timeout must be a positive integer");
-    if (*port <= 0 || *port > UINT16_MAX) FATAL("Port must be between 1 and 65535");
+    if (!(1 <= *port && *port <= UINT16_MAX)) FATAL("Port must be between 1 and 65535");
 
     // Validate arguments.
     if (!has_next_arg()) FATAL("Invalid arguments, domain is not specified");

@@ -232,7 +232,7 @@ static bool udp_receive(Query *query, uint8_t *buffer, size_t buffer_size, struc
     return true;
 }
 
-static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool is_subquery, RRVec *result);
+static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_subquery, RRVec *result);
 
 static bool choose_nameserver(Query *query, const char *sname, size_t *zone_index_out, size_t *nameserver_index_out) {
     for (;;) {
@@ -312,7 +312,7 @@ static bool is_subdomain(const char *subdomain, const char *domain) {
     return strcmp(subdomain + subdomain_prefix_length, domain) == 0;
 }
 
-static bool follow_cnames(RRVec *rrs, char sname[static DOMAIN_SIZE], uint16_t qtype, RRVec *result) {
+static bool follow_cnames(RRVec *rrs, char sname[static DOMAIN_SIZE], RRType qtype, RRVec *result) {
     bool found = false;
     bool restart;
     do {
@@ -374,7 +374,7 @@ exit:
     return result;
 }
 
-static bool resolve_rec(Query *query, const char *domain, uint16_t qtype, bool is_subquery, RRVec *result) {
+static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_subquery, RRVec *result) {
 #define QUERY_ERROR(...)                                                        \
     do {                                                                        \
         if (query->verbose) fprintf(stderr, __VA_ARGS__);                       \
@@ -631,7 +631,7 @@ query_error:
 #undef NAMESERVER_ERROR
 }
 
-bool resolve(const char *domain, uint16_t qtype, const char *nameserver, uint16_t port, uint64_t timeout_ms,
+bool resolve(const char *domain, RRType qtype, const char *nameserver, uint16_t port, uint64_t timeout_ms,
              uint32_t flags, RRVec *result) {
     if (result == NULL || domain == NULL) return false;
 
