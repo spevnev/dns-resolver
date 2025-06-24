@@ -96,7 +96,7 @@ typedef struct {
     uint16_t additional_count;
 } DNSHeader;
 
-// Struct to interpret OPT RR's ttl field (in network order).
+// Struct to interpret OPT RR's TTL field (in network order).
 typedef struct {
     uint8_t extended_rcode;
     uint8_t version;
@@ -141,7 +141,7 @@ typedef struct {
     uint8_t algorithm;
     uint8_t digest_algorithm;
     uint8_t *digest;
-    size_t digest_size;
+    int digest_size;
 } DS;
 
 typedef struct {

@@ -340,51 +340,16 @@ static bool follow_cnames(RRVec *rrs, char sname[static DOMAIN_SIZE], uint16_t q
     return found;
 }
 
-static size_t domain_to_canonical(const char *domain, uint8_t output_buffer[static DOMAIN_SIZE]) {
-    if (is_root_domain(domain)) {
-        *output_buffer = 0;
-        return 1;
-    }
-
-    uint8_t *out = output_buffer;
-    const char *start = domain;
-    for (const char *cur = domain; *cur != '\0'; cur++) {
-        if (*cur == '.') {
-            uint8_t length = cur - start;
-            *out++ = length;
-            memcpy(out, start, length);
-            out += length;
-            start = cur + 1;
-        }
-    }
-    *out++ = 0;
-
-    return out - output_buffer;
-}
-
-static uint8_t get_domain_labels_num(const char *domain) {
-    if (is_root_domain(domain)) return 0;
-
-    uint8_t labels = 0;
-    for (const char *cur = domain; *cur != '\0'; cur++) {
-        if (*cur == '.') labels++;
-    }
-    return labels;
-}
-
 static bool get_dnskeys(Query *query, Zone *zone) {
     if (zone->dss.length == 0) return false;
 
     bool result = false;
     RRVec dnskeys = {0};
+    RRVec verified_dnskeys = {0};
     RR *rrsig_rr = NULL;
-    EVP_MD_CTX *ctx = NULL;
-    const EVP_MD *ds_digest_algorithm = NULL;
-    unsigned char *digest = NULL;
-    const EVP_MD *rrsig_digest_algorithm = NULL;
-    EVP_PKEY *pkey = NULL;
 
     if (!resolve_rec(query, zone->domain, TYPE_DNSKEY, true, &dnskeys)) goto exit;
+    if (!verify_dnskeys(dnskeys, zone->dss, &verified_dnskeys)) goto exit;
 
     for (uint32_t i = 0; i < dnskeys.length; i++) {
         if (dnskeys.data[i]->type == TYPE_RRSIG) {
@@ -394,98 +359,18 @@ static bool get_dnskeys(Query *query, Zone *zone) {
         }
     }
     if (rrsig_rr == NULL) goto exit;
-    RRSIG *rrsig = &rrsig_rr->data.rrsig;
 
-    assert(zone->dss.length == 1);
-    RR *ds = zone->dss.data[0];
+    if (!verify_rrsig(dnskeys, TYPE_DNSKEY, rrsig_rr, verified_dnskeys, zone->domain)) goto exit;
 
-    if ((ctx = EVP_MD_CTX_new()) == NULL) goto exit;
-    if ((ds_digest_algorithm = get_ds_digest_algorithm(ds->data.ds.digest_algorithm)) == NULL) goto exit;
-    if ((digest = OPENSSL_malloc(EVP_MD_get_size(ds_digest_algorithm))) == NULL) goto exit;
-
-    RR *verified_dnskey_rr = NULL;
-    unsigned int digest_size;
-    uint8_t canonical_domain[DOMAIN_SIZE];
-    for (uint32_t i = 0; i < dnskeys.length; i++) {
-        RR *dnskey_rr = dnskeys.data[i];
-        DNSKEY *dnskey = &dnskey_rr->data.dnskey;
-
-        if (dnskey->key_tag != ds->data.ds.key_tag) continue;
-        if (!dnskey->is_zone_key) continue;
-
-        size_t canonical_length = domain_to_canonical(dnskey_rr->domain, canonical_domain);
-        if (!EVP_DigestInit_ex(ctx, ds_digest_algorithm, NULL)
-            || !EVP_DigestUpdate(ctx, canonical_domain, canonical_length)
-            || !EVP_DigestUpdate(ctx, dnskey->data, dnskey->data_length)
-            || !EVP_DigestFinal_ex(ctx, digest, &digest_size)) {
-            goto exit;
-        }
-
-        if (ds->data.ds.digest_size == digest_size && memcmp(digest, ds->data.ds.digest, digest_size) == 0) {
-            verified_dnskey_rr = dnskey_rr;
-            break;
-        }
-    }
-    if (verified_dnskey_rr == NULL) goto exit;
-    DNSKEY *verified_dnskey = &verified_dnskey_rr->data.dnskey;
-
-    time_t time_now = time(NULL);
-    if (!(rrsig->inception_time <= time_now && time_now <= rrsig->expiration_time)) goto exit;
-    if (strcmp(rrsig_rr->domain, verified_dnskey_rr->domain) != 0) goto exit;
-    if (rrsig->type_covered != TYPE_DNSKEY) goto exit;
-    if (strcmp(rrsig->signer_name, zone->domain) != 0) goto exit;
-    if (rrsig->algorithm != verified_dnskey->algorithm) goto exit;
-    if (rrsig->key_tag != verified_dnskey->key_tag) goto exit;
-    if (strcmp(rrsig_rr->domain, verified_dnskey_rr->domain) != 0) goto exit;
-    if (rrsig->labels > get_domain_labels_num(verified_dnskey_rr->domain)) goto exit;
-
-    if ((rrsig_digest_algorithm = get_rrsig_digest_algorithm(verified_dnskey->algorithm)) == NULL) goto exit;
-    if ((pkey = load_dnskey(verified_dnskey)) == NULL) goto exit;
-    if (EVP_DigestVerifyInit(ctx, NULL, rrsig_digest_algorithm, NULL, pkey) != 1) goto exit;
-    if (EVP_DigestVerifyUpdate(ctx, rrsig->data, rrsig->data_length) != 1) goto exit;
-
-    if (!sort_rr_vec_canonically(dnskeys)) goto exit;
-
-    for (uint32_t i = 0; i < dnskeys.length; i++) {
-        RR *dnskey_rr = dnskeys.data[i];
-        DNSKEY *dnskey = &dnskey_rr->data.dnskey;
-
-        size_t canonical_length = domain_to_canonical(dnskey_rr->domain, canonical_domain);
-        uint16_t type_net = htons(dnskey_rr->type);
-        uint16_t class_net = htons(CLASS_IN);
-        uint32_t ttl_net = htonl(rrsig->original_ttl);
-        uint16_t rdata_length_net = htons(dnskey->data_length);
-
-        if (EVP_DigestVerifyUpdate(ctx, canonical_domain, canonical_length) != 1
-            || EVP_DigestVerifyUpdate(ctx, &type_net, sizeof(type_net)) != 1
-            || EVP_DigestVerifyUpdate(ctx, &class_net, sizeof(class_net)) != 1
-            || EVP_DigestVerifyUpdate(ctx, &ttl_net, sizeof(ttl_net)) != 1
-            || EVP_DigestVerifyUpdate(ctx, &rdata_length_net, sizeof(rdata_length_net)) != 1
-            || EVP_DigestVerifyUpdate(ctx, dnskey->data, dnskey->data_length) != 1) {
-            goto exit;
-        }
-    }
-
-    size_t signature_length;
-    unsigned char *signature = load_signature(rrsig, &signature_length);
-    if (signature == NULL) goto exit;
-
-    if (EVP_DigestVerifyFinal(ctx, signature, signature_length) == 1) {
-        result = true;
-
-        // Move keys to the zone and reset `dnskeys` to avoid freeing them.
-        zone->dnskeys = dnskeys;
-        memset(&dnskeys, 0, sizeof(dnskeys));
-    }
-
-    free_signature(rrsig, signature);
+    // Move keys to the zone and reset `dnskeys` to avoid freeing them.
+    zone->dnskeys = dnskeys;
+    memset(&dnskeys, 0, sizeof(dnskeys));
+    result = true;
 
 exit:
-    EVP_PKEY_free(pkey);
     free_rr(rrsig_rr);
+    VECTOR_FREE(&verified_dnskeys);
     free_rr_vec(dnskeys);
-    OPENSSL_free(digest);
-    EVP_MD_CTX_free(ctx);
     return result;
 }
 

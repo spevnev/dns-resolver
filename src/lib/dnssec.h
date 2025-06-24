@@ -1,18 +1,12 @@
 #ifndef DNSSEC_H
 #define DNSSEC_H
 
-#include <openssl/evp.h>
 #include <stdint.h>
 #include "dns.h"
 
-const EVP_MD *get_ds_digest_algorithm(uint8_t algorithm);
 int get_ds_digest_size(uint8_t algorithm);
-const EVP_MD *get_rrsig_digest_algorithm(uint8_t algorithm);
 
-EVP_PKEY *load_dnskey(const DNSKEY *dnskey);
-unsigned char *load_signature(const RRSIG *rrsig, size_t *signature_length_out);
-void free_signature(const RRSIG *rrsig, unsigned char *signature);
-
-bool sort_rr_vec_canonically(RRVec rr_vec);
+bool verify_dnskeys(RRVec dnskeys, RRVec dss, RRVec *verified_dnskeys_out);
+bool verify_rrsig(RRVec rr_vec, uint16_t rr_type, const RR *rrsig_rr, RRVec dnskeys, const char *zone_domain);
 
 #endif  // DNSSEC_H
