@@ -21,7 +21,7 @@ MockResponse mock_response = {
 int main(void) {
     RRVec result = {0};
     bool found
-        = resolve(TEST_DOMAIN, TYPE_A, TEST_IP, TEST_PORT, TEST_TIMEOUT, TEST_FLAGS | RESOLVE_DISABLE_COOKIE, &result);
+        = resolve(TEST_DOMAIN, TYPE_A, TEST_IP, TEST_PORT, TEST_TIMEOUT, TEST_FLAGS | RESOLVE_REQUIRE_EDNS, &result);
     ASSERT(!found);
     return EXIT_SUCCESS;
 }

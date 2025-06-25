@@ -36,10 +36,13 @@ int main(int argc, char **argv) {
     const char **qtype_str = option_str('t', "type", "specify query type", true, "A");
     long *timeout_s = option_long('T', "timeout", "timeout in seconds", true, 10);
     bool *verbose = option_bool('v', "verbose", "enable verbose output", true, false);
-    bool *recursion_desired = option_bool('r', "rdflag", "set Recursion Desired", true, true);
+    bool *enable_rd = option_bool('r', "rdflag", "set Recursion Desired", true, true);
     bool *enable_edns = option_bool('\0', "edns", "enable EDNS", true, true);
+    bool *require_edns = option_bool('\0', "require-edns", "require EDNS", true, true);
     bool *enable_cookie = option_bool('\0', "cookie", "enable DNS cookie", true, true);
+    bool *require_cookie = option_bool('\0', "require-cookie", "require DNS cookie", true, false);
     bool *enable_dnssec = option_bool('\0', "dnssec", "enable DNSSEC", true, true);
+    bool *require_dnssec = option_bool('\0', "require-dnssec", "require DNSSEC", true, false);
     bool *trace = option_bool('\0', "trace", "trace delegations from the root nameserver", true, false);
     bool *no_root_ns = option_bool('\0', "no-root", "do not ask root nameservers", true, false);
 
@@ -63,12 +66,15 @@ int main(int argc, char **argv) {
     if (has_next_arg()) FATAL("Expected one argument (domain) but found \"%s\" and \"%s\"", domain, next_arg());
 
     uint32_t flags = 0;
-    if (!*recursion_desired) flags |= RESOLVE_DISABLE_RDFLAG;
-    if (!*enable_edns) flags |= RESOLVE_DISABLE_EDNS;
-    if (!*enable_cookie) flags |= RESOLVE_DISABLE_COOKIE;
-    if (!*enable_dnssec) flags |= RESOLVE_DISABLE_DNSSEC;
-    if (*no_root_ns) flags |= RESOLVE_NO_ROOT_NS;
     if (*verbose) flags |= RESOLVE_VERBOSE;
+    if (!*enable_rd) flags |= RESOLVE_DISABLE_RDFLAG;
+    if (!*enable_edns) flags |= RESOLVE_DISABLE_EDNS;
+    if (*require_edns) flags |= RESOLVE_REQUIRE_EDNS;
+    if (!*enable_cookie) flags |= RESOLVE_DISABLE_COOKIE;
+    if (*require_cookie) flags |= RESOLVE_REQUIRE_COOKIE;
+    if (!*enable_dnssec) flags |= RESOLVE_DISABLE_DNSSEC;
+    if (*require_dnssec) flags |= RESOLVE_REQUIRE_DNSSEC;
+    if (*no_root_ns) flags |= RESOLVE_NO_ROOT_NS;
     if (*trace) {
         flags |= RESOLVE_VERBOSE;
 

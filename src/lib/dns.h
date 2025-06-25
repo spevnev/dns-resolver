@@ -84,7 +84,7 @@ typedef struct {
     union {
         uint16_t flags;
         struct {
-            uint8_t recursion_desired : 1;
+            uint8_t enable_rd : 1;
             uint8_t is_truncated : 1;
             uint8_t is_authoritative : 1;
             uint8_t opcode : 4;
@@ -139,6 +139,7 @@ typedef struct {
 typedef struct {
     uint16_t udp_payload_size;
     uint8_t extended_rcode;
+    bool has_cookies;
     DNSCookies cookies;
 } OPT;
 
@@ -250,9 +251,8 @@ char *fully_qualify_domain(const char *domain);
 void print_rr(RR *rr);
 void free_rr(RR *rr);
 
-bool write_request(Request *request, bool recursion_desired, const char *domain, RRType qtype, bool enable_edns,
-                   bool enable_cookie, bool enable_dnssec, uint16_t udp_payload_size, DNSCookies *cookies,
-                   uint16_t *id_out);
+bool write_request(Request *request, bool enable_rd, const char *domain, RRType qtype, bool enable_edns,
+                   bool enable_cookie, bool enable_dnssec, DNSCookies *cookies, uint16_t *id_out);
 
 bool read_response_header(Response *response, uint16_t request_id, DNSHeader *header_out);
 bool validate_question(Response *response, RRType request_qtype, const char *request_domain);

@@ -54,7 +54,7 @@ ssize_t recvfrom(int fd, void *buffer, size_t buffer_size, int flags, struct soc
 
     DNSHeader header = {
         .id = request_header.id + mock_response.set_wrong_id,
-        .recursion_desired = request_header.recursion_desired,
+        .enable_rd = request_header.enable_rd,
         .is_truncated = mock_response.is_truncated,
         .is_authoritative = mock_response.is_authoritative,
         .opcode = mock_response.opcode,

@@ -25,6 +25,7 @@
 
 typedef struct {
     in_addr_t addr;
+    uint16_t udp_payload_size;
     bool sent_bad_cookie;
     DNSCookies cookies;
 } Nameserver;
@@ -33,6 +34,9 @@ VECTOR_TYPEDEF(NameserverVec, Nameserver);
 
 typedef struct {
     bool is_being_resolved;
+    bool enable_edns;
+    bool enable_cookie;
+    bool enable_dnssec;
     char domain[DOMAIN_SIZE];
     StrVec nameserver_domains;
     NameserverVec nameservers;
@@ -45,10 +49,13 @@ VECTOR_TYPEDEF(ZoneVec, Zone);
 typedef struct {
     int fd;
     uint16_t port;
-    bool recursion_desired;
+    bool enable_rd;
     bool enable_edns;
+    bool require_edns;
     bool enable_cookie;
+    bool require_cookie;
     bool enable_dnssec;
+    bool require_dnssec;
     bool verbose;
     // Time when timeout was last updated.
     uint64_t time_ns;
@@ -71,6 +78,7 @@ static const uint64_t NS_IN_US = 1000;
 static void add_nameserver(Zone *zone, in_addr_t addr) {
     Nameserver nameserver = {
         .addr = addr,
+        .udp_payload_size = 0,
         .sent_bad_cookie = false,
         .cookies = {0},
     };
@@ -83,6 +91,13 @@ static void free_zone(Zone *zone) {
     VECTOR_FREE(&zone->nameservers);
     free_rr_vec(zone->dss);
     free_rr_vec(zone->dnskeys);
+}
+
+static void add_zone(Query *query, Zone zone) {
+    zone.enable_edns = query->enable_edns;
+    zone.enable_cookie = query->enable_cookie;
+    zone.enable_dnssec = query->enable_dnssec;
+    VECTOR_PUSH(&query->zones, zone);
 }
 
 static bool add_root_zone(Query *query) {
@@ -118,11 +133,17 @@ static bool add_root_zone(Query *query) {
         }
     }
 
-    VECTOR_PUSH(&query->zones, zone);
+    add_zone(query, zone);
     return true;
 error:
     free_zone(&zone);
     return false;
+}
+
+static void zone_disable_edns(Zone *zone) {
+    zone->enable_edns = false;
+    zone->enable_cookie = false;
+    zone->enable_dnssec = false;
 }
 
 static bool is_whitespace(char ch) { return ch == ' ' || ch == '\t'; }
@@ -397,8 +418,8 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
     size_t zone_index;
     size_t nameserver_index;
     char addr_buffer[INET_ADDRSTRLEN];
-    uint16_t buffer_size = query->enable_edns ? EDNS_UDP_PAYLOAD_SIZE : STANDARD_UDP_PAYLOAD_SIZE;
-    uint8_t buffer[buffer_size];
+    uint16_t buffer_size = 0;
+    uint8_t *buffer = NULL;
     uint16_t id;
     struct sockaddr_in request_addr = {
         .sin_family = AF_INET,
@@ -414,8 +435,14 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
         Zone *zone = &query->zones.data[zone_index];
         Nameserver *nameserver = &zone->nameservers.data[nameserver_index];
 
-        if (query->enable_dnssec && zone->dnskeys.length == 0 && qtype != TYPE_DNSKEY) {
-            if (!get_dnskeys(query, zone)) NAMESERVER_ERROR("Failed to get DNSKEYs for zone \"%s\".\n", zone->domain);
+        if (zone->enable_dnssec && zone->dnskeys.length == 0 && qtype != TYPE_DNSKEY) {
+            if (!get_dnskeys(query, zone)) {
+                if (query->require_dnssec) {
+                    NAMESERVER_ERROR("Failed to get or verify DNSKEYs for zone \"%s\".\n", zone->domain);
+                } else {
+                    zone->enable_dnssec = false;
+                }
+            }
         }
 
         if (query->verbose) {
@@ -426,13 +453,26 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
             printf("Resolving %s using %s (%s).\n", sname, addr_str, zone->domain);
         }
 
+        uint16_t request_size;
+        if (nameserver->udp_payload_size == 0) {
+            request_size = zone->enable_edns ? EDNS_UDP_PAYLOAD_SIZE : STANDARD_UDP_PAYLOAD_SIZE;
+        } else {
+            request_size = nameserver->udp_payload_size;
+        }
+
+        if (request_size > buffer_size) {
+            buffer_size = request_size;
+            buffer = realloc(buffer, buffer_size);
+            if (buffer == NULL) QUERY_ERROR("Out of memory.\n");
+        }
+
         Request request = {
             .buffer = buffer,
-            .size = buffer_size,
+            .size = request_size,
             .length = 0,
         };
-        if (!write_request(&request, query->recursion_desired, sname, qtype, query->enable_edns, query->enable_cookie,
-                           query->enable_dnssec, buffer_size, &nameserver->cookies, &id)) {
+        if (!write_request(&request, query->enable_rd, sname, qtype, zone->enable_edns, zone->enable_cookie,
+                           zone->enable_dnssec, &nameserver->cookies, &id)) {
             QUERY_ERROR("Request buffer is too small.\n");
         }
 
@@ -464,7 +504,11 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
             case RCODE_SERVER_ERROR:    NAMESERVER_ERROR("Nameserver error.\n");
             case RCODE_NOT_IMPLEMENTED: NAMESERVER_ERROR("Nameserver does not support this type of query.\n");
             case RCODE_REFUSED:         NAMESERVER_ERROR("Nameserver refused to answer.\n");
-            default:                    unknown_rcode = true; break;
+            default:
+                // It may be unknown because it is the lower half of the extended rcode,
+                // wait for the OPT RR (or absence of it) before throwing an error.
+                unknown_rcode = true;
+                break;
         }
 
         if (!validate_question(&response, qtype, sname)) NAMESERVER_ERROR("Invalid question in response.\n");
@@ -546,21 +590,27 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
                 if (!read_rr(&response, &rr)) NAMESERVER_ERROR("Invalid resource record.\n");
 
                 if (rr->type == TYPE_OPT) {
-                    if (!query->enable_edns) NAMESERVER_ERROR("Nameserver sent OPT although EDNS is disabled.\n");
+                    if (!zone->enable_edns) NAMESERVER_ERROR("Nameserver sent OPT although EDNS is disabled.\n");
 
                     if (has_opt) NAMESERVER_ERROR("Multiple OPT RRs in additional section.\n");
                     has_opt = true;
 
+                    nameserver->udp_payload_size = rr->data.opt.udp_payload_size;
                     extended_rcode = (((uint16_t) rr->data.opt.extended_rcode) << 4) | response_header.rcode;
 
-                    if (query->enable_cookie) {
-                        if (nameserver->cookies.client != rr->data.opt.cookies.client) {
-                            NAMESERVER_ERROR("Invalid client cookie.\n");
-                        }
+                    if (zone->enable_cookie) {
+                        if (rr->data.opt.has_cookies) {
+                            if (nameserver->cookies.client != rr->data.opt.cookies.client) {
+                                NAMESERVER_ERROR("Invalid client cookie.\n");
+                            }
 
-                        nameserver->cookies.server_size = rr->data.opt.cookies.server_size;
-                        memcpy(nameserver->cookies.server, rr->data.opt.cookies.server,
-                               nameserver->cookies.server_size);
+                            nameserver->cookies.server_size = rr->data.opt.cookies.server_size;
+                            memcpy(nameserver->cookies.server, rr->data.opt.cookies.server,
+                                   nameserver->cookies.server_size);
+                        } else {
+                            if (query->require_cookie) NAMESERVER_ERROR("Nameserver does not support cookie.\n");
+                            zone->enable_cookie = false;
+                        }
                     }
                     continue;
                 }
@@ -585,14 +635,22 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
                 }
             }
 
-            if (query->enable_edns && !has_opt) NAMESERVER_ERROR("Nameserver does not support EDNS.\n");
+            if (zone->enable_edns && !has_opt) {
+                if (query->require_edns) NAMESERVER_ERROR("Nameserver does not support EDNS.\n");
+                zone_disable_edns(zone);
+            }
 
             unknown_rcode = false;
             switch (extended_rcode) {
                 case RCODE_SUCCESS:
                 case RCODE_NAME_ERROR: break;
                 case RCODE_BAD_VERSION:
-                    NAMESERVER_ERROR("Nameserver does not support EDNS version %d.\n", EDNS_VERSION);
+                    if (query->require_edns) {
+                        NAMESERVER_ERROR("Nameserver does not support EDNS version %d.\n", EDNS_VERSION);
+                    } else {
+                        zone_disable_edns(zone);
+                    }
+                    break;
                 case RCODE_BAD_COOKIE:
                     // Retry with the new server cookie once before removing the nameserver.
                     if (nameserver->sent_bad_cookie) NAMESERVER_ERROR("Bad server cookie.\n");
@@ -602,12 +660,13 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
             }
 
             if (authority_zone.nameservers.length > 0 || authority_zone.nameserver_domains.length > 0) {
-                VECTOR_PUSH(&query->zones, authority_zone);
+                add_zone(query, authority_zone);
                 memset(&authority_zone, 0, sizeof(authority_zone));
             }
-        } else if (query->enable_edns) {
+        } else if (zone->enable_edns) {
             // Response does not have additional sections, and thus no OPT.
-            NAMESERVER_ERROR("Nameserver does not support EDNS.\n");
+            if (query->require_edns) NAMESERVER_ERROR("Nameserver does not support EDNS.\n");
+            zone_disable_edns(zone);
         }
 
         if (unknown_rcode) NAMESERVER_ERROR("Invalid or unsupported response code %d.\n", response_header.rcode);
@@ -622,9 +681,10 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
     if (query->verbose && is_subquery && !found) printf("Failed to resolve the domain.\n");
 
 query_error:
+    free_zone(&authority_zone);
     free_rr_vec(prev_rrs);
     free_rr(rr);
-    free_zone(&authority_zone);
+    free(buffer);
     return found;
 
 #undef QUERY_ERROR
@@ -635,14 +695,27 @@ bool resolve(const char *domain, RRType qtype, const char *nameserver, uint16_t 
              uint32_t flags, RRVec *result) {
     if (result == NULL || domain == NULL) return false;
 
+    bool enable_edns = !(flags & RESOLVE_DISABLE_EDNS);
+
+    bool enable_cookie = enable_edns && !(flags & RESOLVE_DISABLE_COOKIE);
+    bool require_cookie = enable_cookie && (flags & RESOLVE_REQUIRE_COOKIE);
+
+    bool enable_dnssec = enable_edns && !(flags & RESOLVE_DISABLE_DNSSEC);
+    bool require_dnssec = enable_dnssec && (flags & RESOLVE_REQUIRE_DNSSEC);
+
+    bool require_edns = (flags & RESOLVE_REQUIRE_EDNS) || require_cookie || require_dnssec;
+
     bool found = false;
     Query query = {
         .fd = -1,
         .port = port,
-        .recursion_desired = !(flags & RESOLVE_DISABLE_RDFLAG),
-        .enable_edns = !(flags & RESOLVE_DISABLE_EDNS),
-        .enable_cookie = !(flags & RESOLVE_DISABLE_COOKIE),
-        .enable_dnssec = !(flags & RESOLVE_DISABLE_DNSSEC),
+        .enable_rd = !(flags & RESOLVE_DISABLE_RDFLAG),
+        .enable_edns = enable_edns,
+        .require_edns = require_edns,
+        .enable_cookie = enable_cookie,
+        .require_cookie = require_cookie,
+        .enable_dnssec = enable_dnssec,
+        .require_dnssec = require_dnssec,
         .verbose = flags & RESOLVE_VERBOSE,
         .time_ns = get_time_ns(),
         .udp_timeout_ns = MAX(timeout_ms / 5, MIN_QUERY_TIMEOUT_MS) * NS_IN_MS,
@@ -673,7 +746,7 @@ bool resolve(const char *domain, RRType qtype, const char *nameserver, uint16_t 
         }
         VECTOR_PUSH(&zone.nameserver_domains, nameserver_fqd);
     }
-    VECTOR_PUSH(&query.zones, zone);
+    add_zone(&query, zone);
 
     char *fqd = fully_qualify_domain(domain);
     if (fqd == NULL) {

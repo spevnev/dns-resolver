@@ -71,7 +71,7 @@ int main(void) {
     ASSERT(!found);
     ASSERT(result.length == 0);
 
-    found = resolve(DOMAIN, TYPE_A, TEST_IP, TEST_PORT, TEST_TIMEOUT, TEST_FLAGS, &result);
+    found = resolve(DOMAIN, TYPE_A, TEST_IP, TEST_PORT, TEST_TIMEOUT, TEST_FLAGS | RESOLVE_REQUIRE_EDNS, &result);
     ASSERT(found);
     ASSERT(result.length == 3);
 

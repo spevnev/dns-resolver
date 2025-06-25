@@ -223,6 +223,7 @@ static bool read_opt_data(Response *response, uint16_t data_length, OPT *opt) {
             case OPT_COOKIE:
                 if (!(16 <= option_length && option_length <= 40)) return false;
 
+                opt->has_cookies = true;
                 if (!read(response, &opt->cookies.client, sizeof(opt->cookies.client))) return false;
 
                 opt->cookies.server_size = option_length - sizeof(opt->cookies.client);
@@ -527,15 +528,14 @@ void free_rr(RR *rr) {
     free(rr);
 }
 
-bool write_request(Request *request, bool recursion_desired, const char *domain, RRType qtype, bool enable_edns,
-                   bool enable_cookie, bool enable_dnssec, uint16_t udp_payload_size, DNSCookies *cookies,
-                   uint16_t *id_out) {
+bool write_request(Request *request, bool enable_rd, const char *domain, RRType qtype, bool enable_edns,
+                   bool enable_cookie, bool enable_dnssec, DNSCookies *cookies, uint16_t *id_out) {
     uint16_t id;
     if (getrandom(&id, sizeof(id), 0) != sizeof(id)) return false;
 
     DNSHeader header = {
         .id = htons(id),
-        .recursion_desired = recursion_desired,
+        .enable_rd = enable_rd,
         .opcode = OPCODE_QUERY,
         .is_response = false,
         .checking_disabled = false,
@@ -555,7 +555,7 @@ bool write_request(Request *request, bool recursion_desired, const char *domain,
         if (!write_u8(request, 0)) return false;
         if (!write_u16(request, TYPE_OPT)) return false;
         // CLASS contains max UDP payload size.
-        if (!write_u16(request, MAX(udp_payload_size, STANDARD_UDP_PAYLOAD_SIZE))) return false;
+        if (!write_u16(request, MAX(request->size, STANDARD_UDP_PAYLOAD_SIZE))) return false;
 
         // TTL contains additional OPT fields.
         OptTtlFields opt_fields = {
