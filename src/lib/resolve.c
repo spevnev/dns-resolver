@@ -110,10 +110,10 @@ static bool add_root_zone(Query *query) {
     }
 
     if (query->enable_dnssec) {
-        for (size_t i = 0; i < ROOT_DNSKEYS_COUNT; i++) {
+        for (size_t i = 0; i < ROOT_DS_COUNT; i++) {
             RR *rr = malloc(sizeof(*rr));
             if (rr == NULL) goto error;
-            memcpy(rr, &ROOT_DNSKEYS[i], sizeof(*rr));
+            memcpy(rr, &ROOT_DS[i], sizeof(*rr));
 
             rr->domain = strdup(rr->domain);
             if (rr->domain == NULL) {
@@ -121,15 +121,15 @@ static bool add_root_zone(Query *query) {
                 goto error;
             }
 
-            rr->data.dnskey.key = malloc(rr->data.dnskey.key_size);
-            if (rr->data.dnskey.key == NULL) {
+            rr->data.ds.digest = malloc(rr->data.ds.digest_size);
+            if (rr->data.ds.digest == NULL) {
                 free(rr->domain);
                 free(rr);
                 goto error;
             }
-            memcpy(rr->data.dnskey.key, ROOT_DNSKEYS[i].data.dnskey.key, rr->data.dnskey.key_size);
+            memcpy(rr->data.ds.digest, ROOT_DS[i].data.ds.digest, rr->data.ds.digest_size);
 
-            VECTOR_PUSH(&zone.dnskeys, rr);
+            VECTOR_PUSH(&zone.dss, rr);
         }
     }
 
@@ -401,14 +401,17 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
         Zone *zone = &query->zones.data[zone_index];
         Nameserver *nameserver = &zone->nameservers.data[nameserver_index];
 
+        // If we do not have zone's DNSKEYs, get them before asking the main question.
         if (zone->enable_dnssec && zone->dnskeys.length == 0 && qtype != TYPE_DNSKEY) {
-            if (zone->dss.length == 0 || !resolve_rec(query, zone->domain, TYPE_DNSKEY, true, &zone->dnskeys)) {
+            RRVec dnskeys = {0};
+            if (zone->dss.length == 0 || !resolve_rec(query, zone->domain, TYPE_DNSKEY, true, &dnskeys)) {
                 if (query->require_dnssec) {
                     NAMESERVER_ERROR("Failed to get or verify DNSKEYs for zone \"%s\".\n", zone->domain);
                 } else {
                     zone->enable_dnssec = false;
                 }
             }
+            zone->dnskeys = dnskeys;
         }
 
         if (query->verbose) {
@@ -456,7 +459,7 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
             .length = response_length,
         };
         if (!read_response_header(&response, id, &response_header)) NAMESERVER_ERROR("Invalid response header.\n");
-        if (response_header.is_truncated) QUERY_ERROR("Response is truncated.\n");
+        if (response_header.is_truncated) NAMESERVER_ERROR("Response is truncated.\n");
 
         bool unknown_rcode = false;
         switch (response_header.rcode) {
@@ -494,14 +497,9 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
 
                 if (strcmp(rr->domain, sname) != 0) {
                     VECTOR_PUSH(&prev_rrs, rr);
-                    // Set to NULL to avoid freeing it.
                     rr = NULL;
-                    continue;
-                }
-
-                if (rr->type == qtype || qtype == QTYPE_ANY) {
+                } else if (rr->type == qtype || qtype == QTYPE_ANY) {
                     VECTOR_PUSH(result, rr);
-                    // Set to NULL to avoid freeing it.
                     rr = NULL;
                     found = true;
                 } else if (rr->type == TYPE_CNAME) {
@@ -561,7 +559,6 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
                     VECTOR_PUSH(&authority_zone.nameserver_domains, domain);
                 } else if (zone->enable_dnssec && rr->type == TYPE_DS) {
                     VECTOR_PUSH(&authority_zone.dss, rr);
-                    // Set to NULL to avoid freeing it.
                     rr = NULL;
                 } else if (zone->enable_dnssec && rr->type == TYPE_RRSIG && rr->data.rrsig.type_covered == TYPE_DS) {
                     VECTOR_PUSH(&rrsigs, rr);

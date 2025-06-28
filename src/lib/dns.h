@@ -16,8 +16,8 @@
 
 // Max payload size when using UDP without EDNS (RFC1035).
 #define STANDARD_UDP_PAYLOAD_SIZE 512
-// Recommended request payload size when using UDP with EDNS (RFC6891).
-#define EDNS_UDP_PAYLOAD_SIZE 1280
+// Payload size when using UDP with EDNS (RFC6891).
+#define EDNS_UDP_PAYLOAD_SIZE 4096
 
 // https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-2
 #define CLASS_IN 1

@@ -257,20 +257,20 @@ static RRWithData *rr_vec_to_rrs_with_data(const RRVec *rr_vec) {
 
         switch (rr->type) {
             case TYPE_A:
-                rrs_with_data[i].data_length = sizeof(rr->data.ip4_addr);
                 rrs_with_data[i].data = (uint8_t *) &rr->data.ip4_addr;
+                rrs_with_data[i].data_length = sizeof(rr->data.ip4_addr);
                 break;
             case TYPE_AAAA:
-                rrs_with_data[i].data_length = sizeof(rr->data.ip6_addr);
                 rrs_with_data[i].data = (uint8_t *) &rr->data.ip6_addr;
+                rrs_with_data[i].data_length = sizeof(rr->data.ip6_addr);
                 break;
             case TYPE_DS:
-                rrs_with_data[i].data_length = rr->data.ds.data_length - 1;
                 rrs_with_data[i].data = rr->data.ds.data;
+                rrs_with_data[i].data_length = rr->data.ds.data_length;
                 break;
             case TYPE_DNSKEY:
-                rrs_with_data[i].data_length = rr->data.dnskey.data_length;
                 rrs_with_data[i].data = rr->data.dnskey.data;
+                rrs_with_data[i].data_length = rr->data.dnskey.data_length;
                 break;
             case TYPE_OPT:
             case TYPE_RRSIG:
