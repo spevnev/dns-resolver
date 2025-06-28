@@ -62,7 +62,6 @@
 
 // https://www.iana.org/assignments/dns-sec-alg-numbers/dns-sec-alg-numbers.xhtml
 #define SIGNING_RSASHA1 5
-#define SIGNING_RSASHA1NSEC3SHA1 7
 #define SIGNING_RSASHA256 8
 #define SIGNING_RSASHA512 10
 #define SIGNING_ECDSAP256SHA256 13
@@ -149,6 +148,8 @@ typedef struct {
     uint8_t digest_algorithm;
     uint8_t *digest;
     int digest_size;
+    uint8_t *data;
+    uint16_t data_length;
 } DS;
 
 typedef struct {

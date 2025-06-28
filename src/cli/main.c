@@ -19,7 +19,6 @@ static RRType str_to_qtype(const char *str) {
     if (strcasecmp(str, "TXT") == 0) return TYPE_TXT;
     if (strcasecmp(str, "AAAA") == 0) return TYPE_AAAA;
     if (strcasecmp(str, "DS") == 0) return TYPE_DS;
-    if (strcasecmp(str, "RRSIG") == 0) return TYPE_RRSIG;
     if (strcasecmp(str, "NSEC") == 0) return TYPE_NSEC;
     if (strcasecmp(str, "DNSKEY") == 0) return TYPE_DNSKEY;
     if (strcasecmp(str, "NSEC3") == 0) return TYPE_NSEC3;

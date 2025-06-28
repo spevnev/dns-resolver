@@ -238,13 +238,20 @@ static bool read_opt_data(Response *response, uint16_t data_length, OPT *opt) {
     return true;
 }
 
-static bool read_ds_data(Response *response, DS *ds) {
+static bool read_ds_data(Response *response, uint16_t data_length, DS *ds) {
+    const uint8_t *data_pointer = response->buffer + response->current;
     if (!read_u16(response, &ds->key_tag)) goto error;
     if (!read_u8(response, &ds->signing_algorithm)) goto error;
     if (!read_u8(response, &ds->digest_algorithm)) goto error;
     if ((ds->digest_size = get_ds_digest_size(ds->digest_algorithm)) <= 0) goto error;
     if ((ds->digest = malloc(ds->digest_size)) == NULL) goto error;
     if (!read(response, ds->digest, ds->digest_size)) goto error;
+
+    // Save data to verify the RRSIG later.
+    ds->data_length = data_length;
+    if ((ds->data = malloc(ds->data_length)) == NULL) goto error;
+    memcpy(ds->data, data_pointer, ds->data_length);
+
     return true;
 error:
     free(ds->digest);
@@ -505,7 +512,10 @@ void free_rr(RR *rr) {
             free(rr->data.txt.buffer);
             VECTOR_FREE(&rr->data.txt);
             break;
-        case TYPE_DS: free(rr->data.ds.digest); break;
+        case TYPE_DS:
+            free(rr->data.ds.digest);
+            free(rr->data.ds.data);
+            break;
         case TYPE_RRSIG:
             free(rr->data.rrsig.signer_name);
             free(rr->data.rrsig.signature);
@@ -522,6 +532,7 @@ void free_rr(RR *rr) {
         case TYPE_NSEC3:
             free(rr->data.nsec3.salt);
             free(rr->data.nsec3.next_domain_hash);
+            VECTOR_FREE(&rr->data.nsec3.types);
             break;
     }
     free(rr->domain);
@@ -689,7 +700,7 @@ bool read_rr(Response *response, RR **rr_out) {
             if (!read_opt_data(response, data_length, &rr->data.opt)) goto error;
         } break;
         case TYPE_DS:
-            if (!read_ds_data(response, &rr->data.ds)) goto error;
+            if (!read_ds_data(response, data_length, &rr->data.ds)) goto error;
             break;
         case TYPE_RRSIG:
             if (!read_rrsig_data(response, data_length, &rr->data.rrsig)) goto error;
@@ -703,7 +714,7 @@ bool read_rr(Response *response, RR **rr_out) {
         case TYPE_NSEC3:
             if (!read_nsec3_data(response, data_length, &rr->data.nsec3)) goto error;
             break;
-        default: goto error;
+        default: response->current += data_length; break;
     }
 
     *rr_out = rr;

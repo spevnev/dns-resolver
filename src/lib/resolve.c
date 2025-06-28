@@ -361,40 +361,6 @@ static bool follow_cnames(RRVec *rrs, char sname[static DOMAIN_SIZE], RRType qty
     return found;
 }
 
-static bool get_dnskeys(Query *query, Zone *zone) {
-    if (zone->dss.length == 0) return false;
-
-    bool result = false;
-    RRVec dnskeys = {0};
-    RRVec verified_dnskeys = {0};
-    RR *rrsig_rr = NULL;
-
-    if (!resolve_rec(query, zone->domain, TYPE_DNSKEY, true, &dnskeys)) goto exit;
-    if (!verify_dnskeys(dnskeys, zone->dss, &verified_dnskeys)) goto exit;
-
-    for (uint32_t i = 0; i < dnskeys.length; i++) {
-        if (dnskeys.data[i]->type == TYPE_RRSIG) {
-            rrsig_rr = dnskeys.data[i];
-            VECTOR_REMOVE(&dnskeys, i);
-            break;
-        }
-    }
-    if (rrsig_rr == NULL) goto exit;
-
-    if (!verify_rrsig(dnskeys, TYPE_DNSKEY, rrsig_rr, verified_dnskeys, zone->domain)) goto exit;
-
-    // Move keys to the zone and reset `dnskeys` to avoid freeing them.
-    zone->dnskeys = dnskeys;
-    memset(&dnskeys, 0, sizeof(dnskeys));
-    result = true;
-
-exit:
-    free_rr(rrsig_rr);
-    VECTOR_FREE(&verified_dnskeys);
-    free_rr_vec(dnskeys);
-    return result;
-}
-
 static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_subquery, RRVec *result) {
 #define QUERY_ERROR(...)                                                        \
     do {                                                                        \
@@ -436,7 +402,7 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
         Nameserver *nameserver = &zone->nameservers.data[nameserver_index];
 
         if (zone->enable_dnssec && zone->dnskeys.length == 0 && qtype != TYPE_DNSKEY) {
-            if (!get_dnskeys(query, zone)) {
+            if (zone->dss.length == 0 || !resolve_rec(query, zone->domain, TYPE_DNSKEY, true, &zone->dnskeys)) {
                 if (query->require_dnssec) {
                     NAMESERVER_ERROR("Failed to get or verify DNSKEYs for zone \"%s\".\n", zone->domain);
                 } else {
@@ -520,6 +486,7 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
             // If qtype is ANY, terminate search after any response with answers section.
             if (qtype == QTYPE_ANY) found = true;
 
+            RRVec rrsigs = {0};
             if (query->verbose) printf("Answer section:\n");
             for (uint16_t i = 0; i < response_header.answer_count; i++) {
                 if (!read_rr(&response, &rr)) NAMESERVER_ERROR("Invalid resource record.\n");
@@ -532,25 +499,43 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
                     continue;
                 }
 
-                if (rr->type == qtype || qtype == QTYPE_ANY || (qtype == TYPE_DNSKEY && rr->type == TYPE_RRSIG)) {
+                if (rr->type == qtype || qtype == QTYPE_ANY) {
                     VECTOR_PUSH(result, rr);
                     // Set to NULL to avoid freeing it.
                     rr = NULL;
                     found = true;
-                    continue;
-                }
-
-                if (rr->type == TYPE_CNAME) {
+                } else if (rr->type == TYPE_CNAME) {
                     // Change sname to the alias.
                     memcpy(sname, rr->data.domain, strlen(rr->data.domain) + 1);
                     // Check previous RRs.
                     if (follow_cnames(&prev_rrs, sname, qtype, result)) found = true;
+                } else if (zone->enable_dnssec && rr->type == TYPE_RRSIG && rr->data.rrsig.type_covered == qtype) {
+                    VECTOR_PUSH(&rrsigs, rr);
+                    rr = NULL;
+                }
+            }
+
+            if (zone->enable_dnssec && qtype != QTYPE_ANY && result->length > 0) {
+                bool are_verified = false;
+                if (rrsigs.length > 0) {
+                    if (qtype == TYPE_DNSKEY && zone->dnskeys.length == 0) {
+                        are_verified = verify_dnskeys(result, zone->dss, zone->domain, &rrsigs);
+                    } else {
+                        are_verified = verify_rrsig(result, zone->dnskeys, zone->domain, &rrsigs);
+                    }
+                    free_rr_vec(rrsigs);
+                }
+
+                if (!are_verified) {
+                    if (query->require_dnssec) NAMESERVER_ERROR("Failed to verify the answer RRs.\n");
+                    zone->enable_dnssec = false;
                 }
             }
         }
 
         bool zone_has_domain = false;
         if (response_header.authority_count > 0) {
+            RRVec rrsigs = {0};
             if (query->verbose) printf("Authority section:\n");
             for (uint16_t i = 0; i < response_header.authority_count; i++) {
                 if (!read_rr(&response, &rr)) NAMESERVER_ERROR("Invalid resource record.\n");
@@ -574,10 +559,30 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
                     char *domain = strdup(rr->type == TYPE_NS ? rr->data.domain : rr->data.soa.master_name);
                     if (domain == NULL) OUT_OF_MEMORY();
                     VECTOR_PUSH(&authority_zone.nameserver_domains, domain);
-                } else if (rr->type == TYPE_DS) {
+                } else if (zone->enable_dnssec && rr->type == TYPE_DS) {
                     VECTOR_PUSH(&authority_zone.dss, rr);
                     // Set to NULL to avoid freeing it.
                     rr = NULL;
+                } else if (zone->enable_dnssec && rr->type == TYPE_RRSIG && rr->data.rrsig.type_covered == TYPE_DS) {
+                    VECTOR_PUSH(&rrsigs, rr);
+                    rr = NULL;
+                }
+            }
+
+            if (authority_zone.dss.length > 0) {
+                bool are_verified = false;
+                if (rrsigs.length > 0) {
+                    are_verified = verify_rrsig(&authority_zone.dss, zone->dnskeys, zone->domain, &rrsigs);
+                    free_rr_vec(rrsigs);
+                }
+
+                if (!are_verified) {
+                    if (query->require_dnssec) NAMESERVER_ERROR("Failed to verify the DS RRs.\n");
+                    zone->enable_dnssec = false;
+
+                    // DS RRs that failed verification must not be used.
+                    for (uint32_t i = 0; i < authority_zone.dss.length; i++) free_rr(authority_zone.dss.data[i]);
+                    VECTOR_RESET(&authority_zone.dss);
                 }
             }
         }
@@ -589,9 +594,7 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
             for (uint16_t i = 0; i < response_header.additional_count; i++) {
                 if (!read_rr(&response, &rr)) NAMESERVER_ERROR("Invalid resource record.\n");
 
-                if (rr->type == TYPE_OPT) {
-                    if (!zone->enable_edns) NAMESERVER_ERROR("Nameserver sent OPT although EDNS is disabled.\n");
-
+                if (zone->enable_edns && rr->type == TYPE_OPT) {
                     if (has_opt) NAMESERVER_ERROR("Multiple OPT RRs in additional section.\n");
                     has_opt = true;
 

@@ -6,7 +6,7 @@
 
 int get_ds_digest_size(uint8_t algorithm);
 
-bool verify_dnskeys(RRVec dnskeys, RRVec dss, RRVec *verified_dnskeys_out);
-bool verify_rrsig(RRVec rr_vec, RRType rr_type, const RR *rrsig_rr, RRVec dnskeys, const char *zone_domain);
+bool verify_rrsig(const RRVec *rr_vec, RRVec dnskeys, const char *zone_domain, const RRVec *rrsig_vec);
+bool verify_dnskeys(const RRVec *dnskeys, RRVec dss, const char *zone_domain, const RRVec *rrsig_vec);
 
 #endif  // DNSSEC_H

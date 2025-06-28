@@ -13,7 +13,9 @@
 typedef struct {
     RR *rr;
     StrVec labels;
-} RRWithLabels;
+    const uint8_t *data;
+    size_t data_length;
+} RRWithData;
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -102,9 +104,8 @@ exit:
 static EVP_PKEY *load_dnskey(const DNSKEY *dnskey) {
     switch (dnskey->algorithm) {
         case SIGNING_RSASHA1:
-        case SIGNING_RSASHA1NSEC3SHA1:
         case SIGNING_RSASHA256:
-        case SIGNING_RSASHA512:        return load_rsa_key(dnskey->key, dnskey->key_size);
+        case SIGNING_RSASHA512: return load_rsa_key(dnskey->key, dnskey->key_size);
         case SIGNING_ECDSAP256SHA256:
             if (dnskey->key_size != 64) return NULL;
             return load_ecdsa_key(dnskey->key, dnskey->key_size, "prime256v1");
@@ -158,7 +159,6 @@ static unsigned char *load_ecdsa_signature(const uint8_t *dnssec_sig, size_t dns
 static unsigned char *load_signature(const RRSIG *rrsig, size_t *signature_length_out) {
     switch (rrsig->algorithm) {
         case SIGNING_RSASHA1:
-        case SIGNING_RSASHA1NSEC3SHA1:
         case SIGNING_RSASHA256:
         case SIGNING_RSASHA512:
             // RSA signature format does not need to be converted.
@@ -177,11 +177,10 @@ static unsigned char *load_signature(const RRSIG *rrsig, size_t *signature_lengt
 static void free_signature(const RRSIG *rrsig, unsigned char *signature) {
     switch (rrsig->algorithm) {
         case SIGNING_RSASHA1:
-        case SIGNING_RSASHA1NSEC3SHA1:
         case SIGNING_RSASHA256:
-        case SIGNING_RSASHA512:        break;
+        case SIGNING_RSASHA512:       break;
         case SIGNING_ECDSAP256SHA256:
-        case SIGNING_ECDSAP384SHA384:  OPENSSL_free(signature); break;
+        case SIGNING_ECDSAP384SHA384: OPENSSL_free(signature); break;
     }
 }
 
@@ -236,9 +235,58 @@ static bool domain_to_labels(const char *domain, StrVec *labels) {
     return true;
 }
 
+static void free_rrs_with_data(RRWithData *rrs, uint32_t length) {
+    for (uint32_t i = 0; i < length; i++) {
+        for (uint32_t j = 0; j < rrs[i].labels.length; j++) free(rrs[i].labels.data[j]);
+        VECTOR_FREE(&rrs[i].labels);
+    }
+    free(rrs);
+}
+
+static RRWithData *rr_vec_to_rrs_with_data(const RRVec *rr_vec) {
+    RRWithData *rrs_with_data = NULL;
+    size_t rrs_with_data_size = rr_vec->length * sizeof(*rrs_with_data);
+    if ((rrs_with_data = malloc(rrs_with_data_size)) == NULL) return NULL;
+    memset(rrs_with_data, 0, rrs_with_data_size);
+
+    for (uint32_t i = 0; i < rr_vec->length; i++) {
+        RR *rr = rr_vec->data[i];
+
+        rrs_with_data[i].rr = rr;
+        if (!domain_to_labels(rr_vec->data[i]->domain, &rrs_with_data[i].labels)) goto error;
+
+        switch (rr->type) {
+            case TYPE_A:
+                rrs_with_data[i].data_length = sizeof(rr->data.ip4_addr);
+                rrs_with_data[i].data = (uint8_t *) &rr->data.ip4_addr;
+                break;
+            case TYPE_AAAA:
+                rrs_with_data[i].data_length = sizeof(rr->data.ip6_addr);
+                rrs_with_data[i].data = (uint8_t *) &rr->data.ip6_addr;
+                break;
+            case TYPE_DS:
+                rrs_with_data[i].data_length = rr->data.ds.data_length - 1;
+                rrs_with_data[i].data = rr->data.ds.data;
+                break;
+            case TYPE_DNSKEY:
+                rrs_with_data[i].data_length = rr->data.dnskey.data_length;
+                rrs_with_data[i].data = rr->data.dnskey.data;
+                break;
+            case TYPE_OPT:
+            case TYPE_RRSIG:
+                goto error;
+        }
+    }
+
+    return rrs_with_data;
+error:
+    free_rrs_with_data(rrs_with_data, rr_vec->length);
+    return NULL;
+}
+
 static int canonical_order_comparator(const void *a_raw, const void *b_raw) {
-    RRWithLabels a = *((const RRWithLabels *) a_raw);
-    RRWithLabels b = *((const RRWithLabels *) b_raw);
+    RRWithData a = *((const RRWithData *) a_raw);
+    RRWithData b = *((const RRWithData *) b_raw);
 
     int result = 0;
     int i = a.labels.length - 1, j = b.labels.length - 1;
@@ -251,46 +299,10 @@ static int canonical_order_comparator(const void *a_raw, const void *b_raw) {
     if (i >= 0) return +1;
     if (j >= 0) return -1;
 
-    switch (a.rr->type) {
-        case TYPE_DNSKEY: {
-            DNSKEY *dnskey_a = &a.rr->data.dnskey;
-            DNSKEY *dnskey_b = &b.rr->data.dnskey;
+    result = memcmp(a.data, b.data, MIN(a.data_length, b.data_length));
+    if (result != 0) return result;
 
-            result = memcmp(dnskey_a->data, dnskey_b->data, MIN(dnskey_a->data_length, dnskey_b->data_length));
-            if (result != 0) return result;
-
-            if (dnskey_a->data_length > dnskey_b->data_length) return +1;
-            if (dnskey_a->data_length < dnskey_b->data_length) return -1;
-            FATAL("Duplicate RR are not allowed");
-        }
-        default: FATAL("TODO: domains are equal, compare RDATA");
-    }
-}
-
-static bool sort_rr_vec_canonically(RRVec rr_vec) {
-    bool result = false;
-    RRWithLabels *temp_rrs = NULL;
-
-    size_t temp_rrs_size = rr_vec.length * sizeof(*temp_rrs);
-    if ((temp_rrs = malloc(temp_rrs_size)) == NULL) goto exit;
-    memset(temp_rrs, 0, temp_rrs_size);
-
-    for (uint32_t i = 0; i < rr_vec.length; i++) {
-        temp_rrs[i].rr = rr_vec.data[i];
-        if (!domain_to_labels(rr_vec.data[i]->domain, &temp_rrs[i].labels)) goto exit;
-    }
-
-    qsort(temp_rrs, rr_vec.length, sizeof(*temp_rrs), canonical_order_comparator);
-    result = true;
-
-exit:
-    for (uint32_t i = 0; i < rr_vec.length; i++) {
-        rr_vec.data[i] = temp_rrs[i].rr;
-        for (uint32_t j = 0; j < temp_rrs[i].labels.length; j++) free(temp_rrs[i].labels.data[j]);
-        VECTOR_FREE(&temp_rrs[i].labels);
-    }
-    free(temp_rrs);
-    return result;
+    return a.data_length > b.data_length ? +1 : -1;
 }
 
 static const EVP_MD *get_ds_digest_algorithm(uint8_t algorithm) {
@@ -305,12 +317,11 @@ static const EVP_MD *get_ds_digest_algorithm(uint8_t algorithm) {
 static const EVP_MD *get_rrsig_digest_algorithm(uint8_t algorithm) {
     switch (algorithm) {
         case SIGNING_RSASHA1:
-        case SIGNING_RSASHA1NSEC3SHA1: return EVP_sha1();
         case SIGNING_RSASHA256:
-        case SIGNING_ECDSAP256SHA256:  return EVP_sha256();
-        case SIGNING_ECDSAP384SHA384:  return EVP_sha384();
-        case SIGNING_RSASHA512:        return EVP_sha512();
-        default:                       return NULL;
+        case SIGNING_ECDSAP256SHA256: return EVP_sha256();
+        case SIGNING_ECDSAP384SHA384: return EVP_sha384();
+        case SIGNING_RSASHA512:       return EVP_sha512();
+        default:                      return NULL;
     }
 }
 
@@ -320,71 +331,33 @@ int get_ds_digest_size(uint8_t algorithm) {
     return EVP_MD_get_size(md);
 }
 
-bool verify_dnskeys(RRVec dnskeys, RRVec dss, RRVec *verified_dnskeys_out) {
-    if (dnskeys.length == 0 || dss.length == 0) return false;
+bool verify_rrsig(const RRVec *rr_vec, RRVec dnskeys, const char *zone_domain, const RRVec *rrsig_vec) {
+    if (rr_vec->length == 0 || dnskeys.length == 0 || rrsig_vec->length == 0) return false;
 
-    bool result = false;
-    EVP_MD_CTX *ctx = NULL;
-    const EVP_MD *digest_algorithm;
-    int digest_size;
-    unsigned char *digest = NULL;
-    uint8_t canonical_domain[DOMAIN_SIZE];
-
-    if ((ctx = EVP_MD_CTX_new()) == NULL) goto exit;
-    for (uint32_t i = 0; i < dss.length; i++) {
-        DS *ds = &dss.data[i]->data.ds;
-        if ((digest_algorithm = get_ds_digest_algorithm(ds->digest_algorithm)) == NULL) goto exit;
-        if ((digest_size = EVP_MD_get_size(digest_algorithm)) <= 0) goto exit;
-        if ((digest = OPENSSL_realloc(digest, digest_size)) == NULL) goto exit;
-
-        for (uint32_t i = 0; i < dnskeys.length; i++) {
-            RR *dnskey_rr = dnskeys.data[i];
-            DNSKEY *dnskey = &dnskey_rr->data.dnskey;
-            if (dnskey->key_tag != ds->key_tag) continue;
-            if (!dnskey->is_zone_key) continue;
-
-            size_t canonical_length = domain_to_canonical(dnskey_rr->domain, canonical_domain);
-            if (!EVP_DigestInit_ex(ctx, digest_algorithm, NULL)
-                || !EVP_DigestUpdate(ctx, canonical_domain, canonical_length)
-                || !EVP_DigestUpdate(ctx, dnskey->data, dnskey->data_length)
-                || !EVP_DigestFinal_ex(ctx, digest, NULL)) {
-                continue;
-            }
-
-            if (digest_size == ds->digest_size && memcmp(digest, ds->digest, digest_size) == 0) {
-                VECTOR_PUSH(verified_dnskeys_out, dnskey_rr);
-                result = true;
-                break;
-            }
-        }
-    }
-
-exit:
-    OPENSSL_free(digest);
-    EVP_MD_CTX_free(ctx);
-    return result;
-}
-
-bool verify_rrsig(RRVec rr_vec, RRType rr_type, const RR *rrsig_rr, RRVec dnskeys, const char *zone_domain) {
-    if (rr_vec.length == 0 || dnskeys.length == 0) return false;
+    assert(rrsig_vec->length == 1);
+    const RR *rrsig_rr = rrsig_vec->data[0];
 
     bool result = false;
     EVP_MD_CTX *ctx = NULL;
     unsigned char *signature = NULL;
     const EVP_MD *digest_algorithm = NULL;
     EVP_PKEY *pkey = NULL;
+    RRWithData *rrs_with_data = NULL;
 
     time_t time_now = time(NULL);
     const RRSIG *rrsig = &rrsig_rr->data.rrsig;
-    if (rrsig->type_covered != rr_type) goto exit;
+    if (rrsig->type_covered != rr_vec->data[0]->type) goto exit;
     if (!(rrsig->inception_time <= time_now && time_now <= rrsig->expiration_time)) goto exit;
     if (strcmp(rrsig->signer_name, zone_domain) != 0) goto exit;
-    if (strcmp(rrsig_rr->domain, rr_vec.data[0]->domain) != 0) goto exit;
+    if (strcmp(rrsig_rr->domain, rr_vec->data[0]->domain) != 0) goto exit;
+    if (rrsig->labels > count_domain_labels(rr_vec->data[0]->domain)) goto exit;
 
     size_t signature_length;
     if ((signature = load_signature(rrsig, &signature_length)) == NULL) goto exit;
     if ((ctx = EVP_MD_CTX_new()) == NULL) goto exit;
-    if (!sort_rr_vec_canonically(rr_vec)) goto exit;
+
+    if ((rrs_with_data = rr_vec_to_rrs_with_data(rr_vec)) == NULL) goto exit;
+    qsort(rrs_with_data, rr_vec->length, sizeof(*rrs_with_data), canonical_order_comparator);
 
     uint8_t canonical_domain[DOMAIN_SIZE];
     for (uint32_t i = 0; !result && i < dnskeys.length; i++) {
@@ -393,7 +366,6 @@ bool verify_rrsig(RRVec rr_vec, RRType rr_type, const RR *rrsig_rr, RRVec dnskey
 
         if (rrsig->key_tag != dnskey->key_tag) continue;
         if (rrsig->algorithm != dnskey->algorithm) continue;
-        if (rrsig->labels > count_domain_labels(dnskey_rr->domain)) continue;
         if (strcmp(rrsig->signer_name, dnskey_rr->domain) != 0) continue;
 
         if ((digest_algorithm = get_rrsig_digest_algorithm(dnskey->algorithm)) == NULL) continue;
@@ -402,23 +374,22 @@ bool verify_rrsig(RRVec rr_vec, RRType rr_type, const RR *rrsig_rr, RRVec dnskey
         if (EVP_DigestVerifyInit(ctx, NULL, digest_algorithm, NULL, pkey) != 1) goto bad_key;
         if (EVP_DigestVerifyUpdate(ctx, rrsig->data, rrsig->data_length) != 1) goto bad_key;
 
-        for (uint32_t j = 0; j < rr_vec.length; j++) {
-            RR *rr = rr_vec.data[j];
+        for (uint32_t j = 0; j < rr_vec->length; j++) {
+            RRWithData rr_with_data = rrs_with_data[j];
+            RR *rr = rr_with_data.rr;
 
             size_t canonical_length = domain_to_canonical(rr->domain, canonical_domain);
             uint16_t type_net = htons(rr->type);
             uint16_t class_net = htons(CLASS_IN);
             uint32_t ttl_net = htonl(rrsig->original_ttl);
+            uint16_t data_length_net = htons(rr_with_data.data_length);
 
-            assert(rr->type == TYPE_DNSKEY);
-            uint16_t data_length_net = htons(rr->data.dnskey.data_length);
-
-            if (EVP_DigestVerifyUpdate(ctx, canonical_domain, canonical_length) != 1
-                || EVP_DigestVerifyUpdate(ctx, &type_net, sizeof(type_net)) != 1
-                || EVP_DigestVerifyUpdate(ctx, &class_net, sizeof(class_net)) != 1
-                || EVP_DigestVerifyUpdate(ctx, &ttl_net, sizeof(ttl_net)) != 1
-                || EVP_DigestVerifyUpdate(ctx, &data_length_net, sizeof(data_length_net)) != 1
-                || EVP_DigestVerifyUpdate(ctx, rr->data.dnskey.data, rr->data.dnskey.data_length) != 1) {
+            if (EVP_DigestVerifyUpdate(ctx, canonical_domain, canonical_length) != 1 ||         //
+                EVP_DigestVerifyUpdate(ctx, &type_net, sizeof(type_net)) != 1 ||                //
+                EVP_DigestVerifyUpdate(ctx, &class_net, sizeof(class_net)) != 1 ||              //
+                EVP_DigestVerifyUpdate(ctx, &ttl_net, sizeof(ttl_net)) != 1 ||                  //
+                EVP_DigestVerifyUpdate(ctx, &data_length_net, sizeof(data_length_net)) != 1 ||  //
+                EVP_DigestVerifyUpdate(ctx, rr_with_data.data, rr_with_data.data_length) != 1) {
                 goto bad_key;
             }
         }
@@ -430,7 +401,58 @@ bool verify_rrsig(RRVec rr_vec, RRType rr_type, const RR *rrsig_rr, RRVec dnskey
     }
 
 exit:
+    free_rrs_with_data(rrs_with_data, rr_vec->length);
+    EVP_MD_CTX_free(ctx);
     free_signature(rrsig, signature);
+    return result;
+}
+
+bool verify_dnskeys(const RRVec *dnskeys, RRVec dss, const char *zone_domain, const RRVec *rrsig_vec) {
+    if (dnskeys->length == 0 || dss.length == 0) return false;
+
+    bool result = false;
+    EVP_MD_CTX *ctx = NULL;
+    const EVP_MD *digest_algorithm;
+    int digest_size;
+    unsigned char *digest = NULL;
+    uint8_t canonical_domain[DOMAIN_SIZE];
+    RRVec verified_dnskeys = {0};
+
+    if ((ctx = EVP_MD_CTX_new()) == NULL) goto exit;
+    for (uint32_t i = 0; i < dss.length; i++) {
+        DS *ds = &dss.data[i]->data.ds;
+        if ((digest_algorithm = get_ds_digest_algorithm(ds->digest_algorithm)) == NULL) continue;
+        if ((digest_size = EVP_MD_get_size(digest_algorithm)) <= 0) continue;
+        if ((digest = OPENSSL_realloc(digest, digest_size)) == NULL) goto exit;
+
+        for (uint32_t i = 0; i < dnskeys->length; i++) {
+            RR *dnskey_rr = dnskeys->data[i];
+            DNSKEY *dnskey = &dnskey_rr->data.dnskey;
+            if (dnskey->key_tag != ds->key_tag) continue;
+            if (!dnskey->is_zone_key) continue;
+
+            size_t canonical_length = domain_to_canonical(dnskey_rr->domain, canonical_domain);
+            if (EVP_DigestInit_ex(ctx, digest_algorithm, NULL) != 1 ||             //
+                EVP_DigestUpdate(ctx, canonical_domain, canonical_length) != 1 ||  //
+                EVP_DigestUpdate(ctx, dnskey->data, dnskey->data_length) != 1 ||   //
+                EVP_DigestFinal_ex(ctx, digest, NULL) != 1) {
+                continue;
+            }
+
+            if (digest_size == ds->digest_size && memcmp(digest, ds->digest, digest_size) == 0) {
+                VECTOR_PUSH(&verified_dnskeys, dnskey_rr);
+                break;
+            }
+        }
+    }
+
+    if (verified_dnskeys.length > 0) {
+        result = verify_rrsig(dnskeys, verified_dnskeys, zone_domain, rrsig_vec);
+    }
+
+exit:
+    VECTOR_FREE(&verified_dnskeys);
+    OPENSSL_free(digest);
     EVP_MD_CTX_free(ctx);
     return result;
 }
