@@ -517,9 +517,9 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
                 bool are_verified = false;
                 if (rrsigs.length > 0) {
                     if (qtype == TYPE_DNSKEY && zone->dnskeys.length == 0) {
-                        are_verified = verify_dnskeys(result, zone->dss, zone->domain, &rrsigs);
+                        are_verified = verify_dnskeys(result, &zone->dss, zone->domain, &rrsigs);
                     } else {
-                        are_verified = verify_rrsig(result, zone->dnskeys, zone->domain, &rrsigs);
+                        are_verified = verify_rrsig(result, &zone->dnskeys, zone->domain, &rrsigs);
                     }
                     free_rr_vec(rrsigs);
                 }
@@ -569,7 +569,7 @@ static bool resolve_rec(Query *query, const char *domain, RRType qtype, bool is_
             if (authority_zone.dss.length > 0) {
                 bool are_verified = false;
                 if (rrsigs.length > 0) {
-                    are_verified = verify_rrsig(&authority_zone.dss, zone->dnskeys, zone->domain, &rrsigs);
+                    are_verified = verify_rrsig(&authority_zone.dss, &zone->dnskeys, zone->domain, &rrsigs);
                     free_rr_vec(rrsigs);
                 }
 

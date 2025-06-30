@@ -1,5 +1,5 @@
 #define TEST_IP "127.0.0.1"
 #define TEST_PORT 1053
-#define TEST_DOMAIN "test.com"
+#define TEST_DOMAIN "test.com."
 #define TEST_FLAGS (RESOLVE_NO_ROOT_NS)
 #define TEST_TIMEOUT 1000

@@ -329,7 +329,6 @@ static bool read_dnskey_data(Response *response, uint16_t data_length, DNSKEY *d
 
     if (!read(response, &dnskey->flags, sizeof(dnskey->flags))) goto error;
     if (!read_u8(response, &dnskey->protocol)) goto error;
-    if (dnskey->protocol != DNSKEY_PROTOCOL) goto error;
     if (!read_u8(response, &dnskey->algorithm)) goto error;
 
     // The remaining part of data is the key.

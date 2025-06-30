@@ -274,7 +274,7 @@ static RRWithData *rr_vec_to_rrs_with_data(const RRVec *rr_vec) {
                 break;
             case TYPE_OPT:
             case TYPE_RRSIG:
-                goto error;
+            default:         goto error;
         }
     }
 
@@ -331,84 +331,87 @@ int get_ds_digest_size(uint8_t algorithm) {
     return EVP_MD_get_size(md);
 }
 
-bool verify_rrsig(const RRVec *rr_vec, RRVec dnskeys, const char *zone_domain, const RRVec *rrsig_vec) {
-    if (rr_vec->length == 0 || dnskeys.length == 0 || rrsig_vec->length == 0) return false;
-
-    assert(rrsig_vec->length == 1);
-    const RR *rrsig_rr = rrsig_vec->data[0];
+bool verify_rrsig(const RRVec *rr_vec, const RRVec *dnskeys, const char *zone_domain, const RRVec *rrsig_vec) {
+    if (rr_vec->length == 0 || dnskeys->length == 0 || rrsig_vec->length == 0) return false;
 
     bool result = false;
     EVP_MD_CTX *ctx = NULL;
+    RRWithData *rrs_with_data = NULL;
     unsigned char *signature = NULL;
     const EVP_MD *digest_algorithm = NULL;
     EVP_PKEY *pkey = NULL;
-    RRWithData *rrs_with_data = NULL;
+    uint8_t canonical_domain[DOMAIN_SIZE];
 
-    time_t time_now = time(NULL);
-    const RRSIG *rrsig = &rrsig_rr->data.rrsig;
-    if (rrsig->type_covered != rr_vec->data[0]->type) goto exit;
-    if (!(rrsig->inception_time <= time_now && time_now <= rrsig->expiration_time)) goto exit;
-    if (strcmp(rrsig->signer_name, zone_domain) != 0) goto exit;
-    if (strcmp(rrsig_rr->domain, rr_vec->data[0]->domain) != 0) goto exit;
-    if (rrsig->labels > count_domain_labels(rr_vec->data[0]->domain)) goto exit;
-
-    size_t signature_length;
-    if ((signature = load_signature(rrsig, &signature_length)) == NULL) goto exit;
     if ((ctx = EVP_MD_CTX_new()) == NULL) goto exit;
 
     if ((rrs_with_data = rr_vec_to_rrs_with_data(rr_vec)) == NULL) goto exit;
     qsort(rrs_with_data, rr_vec->length, sizeof(*rrs_with_data), canonical_order_comparator);
 
-    uint8_t canonical_domain[DOMAIN_SIZE];
-    for (uint32_t i = 0; !result && i < dnskeys.length; i++) {
-        RR *dnskey_rr = dnskeys.data[i];
-        DNSKEY *dnskey = &dnskey_rr->data.dnskey;
+    time_t time_now = time(NULL);
+    for (uint32_t i = 0; !result && i < rrsig_vec->length; i++) {
+        const RR *rrsig_rr = rrsig_vec->data[i];
+        const RRSIG *rrsig = &rrsig_rr->data.rrsig;
 
-        if (rrsig->key_tag != dnskey->key_tag) continue;
-        if (rrsig->algorithm != dnskey->algorithm) continue;
-        if (strcmp(rrsig->signer_name, dnskey_rr->domain) != 0) continue;
+        if (rrsig->type_covered != rr_vec->data[0]->type) continue;
+        if (!(rrsig->inception_time <= time_now && time_now <= rrsig->expiration_time)) continue;
+        if (strcmp(rrsig->signer_name, zone_domain) != 0) continue;
+        if (strcmp(rrsig_rr->domain, rr_vec->data[0]->domain) != 0) continue;
+        if (rrsig->labels > count_domain_labels(rr_vec->data[0]->domain)) continue;
 
-        if ((digest_algorithm = get_rrsig_digest_algorithm(dnskey->algorithm)) == NULL) continue;
-        if ((pkey = load_dnskey(dnskey)) == NULL) continue;
+        size_t signature_length;
+        if ((signature = load_signature(rrsig, &signature_length)) == NULL) continue;
 
-        if (EVP_DigestVerifyInit(ctx, NULL, digest_algorithm, NULL, pkey) != 1) goto bad_key;
-        if (EVP_DigestVerifyUpdate(ctx, rrsig->data, rrsig->data_length) != 1) goto bad_key;
+        for (uint32_t j = 0; !result && j < dnskeys->length; j++) {
+            const RR *dnskey_rr = dnskeys->data[j];
+            const DNSKEY *dnskey = &dnskey_rr->data.dnskey;
 
-        for (uint32_t j = 0; j < rr_vec->length; j++) {
-            RRWithData rr_with_data = rrs_with_data[j];
-            RR *rr = rr_with_data.rr;
+            if (rrsig->key_tag != dnskey->key_tag) continue;
+            if (rrsig->algorithm != dnskey->algorithm) continue;
+            if (strcmp(rrsig->signer_name, dnskey_rr->domain) != 0) continue;
 
-            size_t canonical_length = domain_to_canonical(rr->domain, canonical_domain);
-            uint16_t type_net = htons(rr->type);
-            uint16_t class_net = htons(CLASS_IN);
-            uint32_t ttl_net = htonl(rrsig->original_ttl);
-            uint16_t data_length_net = htons(rr_with_data.data_length);
+            if ((digest_algorithm = get_rrsig_digest_algorithm(dnskey->algorithm)) == NULL) continue;
+            if ((pkey = load_dnskey(dnskey)) == NULL) continue;
 
-            if (EVP_DigestVerifyUpdate(ctx, canonical_domain, canonical_length) != 1 ||         //
-                EVP_DigestVerifyUpdate(ctx, &type_net, sizeof(type_net)) != 1 ||                //
-                EVP_DigestVerifyUpdate(ctx, &class_net, sizeof(class_net)) != 1 ||              //
-                EVP_DigestVerifyUpdate(ctx, &ttl_net, sizeof(ttl_net)) != 1 ||                  //
-                EVP_DigestVerifyUpdate(ctx, &data_length_net, sizeof(data_length_net)) != 1 ||  //
-                EVP_DigestVerifyUpdate(ctx, rr_with_data.data, rr_with_data.data_length) != 1) {
-                goto bad_key;
+            if (EVP_DigestVerifyInit(ctx, NULL, digest_algorithm, NULL, pkey) != 1) goto bad_key;
+            if (EVP_DigestVerifyUpdate(ctx, rrsig->data, rrsig->data_length) != 1) goto bad_key;
+
+            for (uint32_t k = 0; k < rr_vec->length; k++) {
+                RRWithData rr_with_data = rrs_with_data[k];
+                const RR *rr = rr_with_data.rr;
+
+                size_t canonical_length = domain_to_canonical(rr->domain, canonical_domain);
+                uint16_t type_net = htons(rr->type);
+                uint16_t class_net = htons(CLASS_IN);
+                uint32_t ttl_net = htonl(rrsig->original_ttl);
+                uint16_t data_length_net = htons(rr_with_data.data_length);
+
+                if (EVP_DigestVerifyUpdate(ctx, canonical_domain, canonical_length) != 1 ||         //
+                    EVP_DigestVerifyUpdate(ctx, &type_net, sizeof(type_net)) != 1 ||                //
+                    EVP_DigestVerifyUpdate(ctx, &class_net, sizeof(class_net)) != 1 ||              //
+                    EVP_DigestVerifyUpdate(ctx, &ttl_net, sizeof(ttl_net)) != 1 ||                  //
+                    EVP_DigestVerifyUpdate(ctx, &data_length_net, sizeof(data_length_net)) != 1 ||  //
+                    EVP_DigestVerifyUpdate(ctx, rr_with_data.data, rr_with_data.data_length) != 1) {
+                    goto bad_key;
+                }
             }
+
+            if (EVP_DigestVerifyFinal(ctx, signature, signature_length) == 1) result = true;
+
+        bad_key:
+            EVP_PKEY_free(pkey);
         }
 
-        if (EVP_DigestVerifyFinal(ctx, signature, signature_length) == 1) result = true;
-
-    bad_key:
-        EVP_PKEY_free(pkey);
+        free_signature(rrsig, signature);
     }
 
 exit:
     free_rrs_with_data(rrs_with_data, rr_vec->length);
     EVP_MD_CTX_free(ctx);
-    free_signature(rrsig, signature);
     return result;
 }
 
-bool verify_dnskeys(const RRVec *dnskeys, RRVec dss, const char *zone_domain, const RRVec *rrsig_vec) {
-    if (dnskeys->length == 0 || dss.length == 0) return false;
+bool verify_dnskeys(const RRVec *dnskeys, const RRVec *dss, const char *zone_domain, const RRVec *rrsig_vec) {
+    if (dnskeys->length == 0 || dss->length == 0) return false;
 
     bool result = false;
     EVP_MD_CTX *ctx = NULL;
@@ -419,16 +422,19 @@ bool verify_dnskeys(const RRVec *dnskeys, RRVec dss, const char *zone_domain, co
     RRVec verified_dnskeys = {0};
 
     if ((ctx = EVP_MD_CTX_new()) == NULL) goto exit;
-    for (uint32_t i = 0; i < dss.length; i++) {
-        DS *ds = &dss.data[i]->data.ds;
+    for (uint32_t i = 0; i < dss->length; i++) {
+        const DS *ds = &dss->data[i]->data.ds;
+
         if ((digest_algorithm = get_ds_digest_algorithm(ds->digest_algorithm)) == NULL) continue;
         if ((digest_size = EVP_MD_get_size(digest_algorithm)) <= 0) continue;
         if ((digest = OPENSSL_realloc(digest, digest_size)) == NULL) goto exit;
 
         for (uint32_t i = 0; i < dnskeys->length; i++) {
             RR *dnskey_rr = dnskeys->data[i];
-            DNSKEY *dnskey = &dnskey_rr->data.dnskey;
+            const DNSKEY *dnskey = &dnskey_rr->data.dnskey;
+
             if (dnskey->key_tag != ds->key_tag) continue;
+            if (dnskey->protocol != DNSKEY_PROTOCOL) continue;
             if (!dnskey->is_zone_key) continue;
 
             size_t canonical_length = domain_to_canonical(dnskey_rr->domain, canonical_domain);
@@ -447,7 +453,7 @@ bool verify_dnskeys(const RRVec *dnskeys, RRVec dss, const char *zone_domain, co
     }
 
     if (verified_dnskeys.length > 0) {
-        result = verify_rrsig(dnskeys, verified_dnskeys, zone_domain, rrsig_vec);
+        result = verify_rrsig(dnskeys, &verified_dnskeys, zone_domain, rrsig_vec);
     }
 
 exit:
