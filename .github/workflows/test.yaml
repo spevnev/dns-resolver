@@ -11,12 +11,12 @@ jobs:
     runs-on: ubuntu-24.04
     # Running without container causes EACCES in BIND.
     container:
-      image: ubuntu:24.04
+      image: gcc:15
     steps:
     - uses: actions/checkout@v2
     - name: Update and upgrade packages
       run: apt-get update -y && apt-get upgrade -y
     - name: Install packages
-      run: apt-get install -y make clang-19 bind9 pkg-config libssl-dev openssl
+      run: apt-get install -y make bind9 pkg-config libssl-dev openssl
     - name: Run tests
-      run: make test
+      run: make test -j $(nproc)

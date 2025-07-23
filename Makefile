@@ -10,13 +10,18 @@ MOCK_CASES_DIR  := tests/cases/mock
 BIN_NAME := resolve
 BIN_PATH := $(OUT_DIR)/$(BIN_NAME)
 
-CC      := clang++
+CC      := g++
 CFLAGS  := -O2 -std=c++23 -Wall -Wextra -pedantic -I $(SRC_DIR) -MMD -MP
 LDFLAGS := $(shell pkg-config --libs openssl)
 DEBUG_CFLAGS := -g3 -fsanitize=address,leak,undefined
 
 ifeq ($(DEBUG), 1)
 	CFLAGS += $(DEBUG_CFLAGS)
+endif
+
+# Disable optimizations to speed up CI
+ifdef CI
+	CFLAGS += -O0
 endif
 
 BIN_SRCS := $(shell find $(SRC_DIR) -type f -name '*.cc')
