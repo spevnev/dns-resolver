@@ -1,0 +1,5 @@
+-std=c++23
+-Isrc
+-Itests/common
+-Itests/mock
+-Iexternal/cxxopts
