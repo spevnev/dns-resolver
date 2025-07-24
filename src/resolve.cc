@@ -425,6 +425,8 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                                                    | std::to_underlying(rcode));
                         nameserver.udp_payload_size = opt.udp_payload_size;
 
+                        if (!opt.dnssec_ok) zone_disable_dnssec(*zone);
+
                         // Check and save DNS cookies.
                         if (zone->enable_cookies) {
                             if (!opt.cookies.has_value()) {

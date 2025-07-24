@@ -1,10 +1,12 @@
 #include <cstdlib>
-#include <cxxopts.hpp>
 #include <memory>
 #include <print>
 #include <string>
 #include "dns.hh"
 #include "resolve.hh"
+
+#define CXXOPTS_NO_REGEX
+#include <cxxopts.hpp>
 
 std::istream &operator>>(std::istream &is, RRType &out) {
     std::string str;

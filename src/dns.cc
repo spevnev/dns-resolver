@@ -243,6 +243,7 @@ private:
         // TTL contains different flags.
         opt.upper_extended_rcode = rr.ttl >> 24;
         uint8_t edns_version = rr.ttl >> 16;
+        opt.dnssec_ok = (rr.ttl >> 15) & 1;
         rr.ttl = 0;
 
         if (edns_version > EDNS_VERSION) throw std::runtime_error("Unsupported EDNS version");

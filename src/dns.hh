@@ -136,6 +136,7 @@ struct OPT {
     uint16_t udp_payload_size;
     uint8_t upper_extended_rcode;
     std::optional<DNSCookies> cookies;
+    bool dnssec_ok;
 };
 
 struct DS {
