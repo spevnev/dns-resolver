@@ -21,6 +21,8 @@ struct Nameserver {
 
     Nameserver(in_addr_t address) : address(address), udp_payload_size(0), sent_bad_cookie(false), cookies() {}
     Nameserver(const std::string &address) : address(address), udp_payload_size(0), sent_bad_cookie(false), cookies() {}
+    Nameserver(std::string &&address)
+        : address(std::move(address)), udp_payload_size(0), sent_bad_cookie(false), cookies() {}
 };
 
 struct Zone {
@@ -29,7 +31,7 @@ struct Zone {
     bool enable_edns;
     bool enable_dnssec;
     bool enable_cookies;
-    std::vector<Nameserver> nameservers;
+    std::vector<std::shared_ptr<Nameserver>> nameservers;
     std::vector<DS> dss;
     std::vector<DNSKEY> dnskeys;
 
@@ -42,6 +44,12 @@ struct Zone {
           nameservers(),
           dss(),
           dnskeys() {}
+
+    void add_nameserver(in_addr_t address) { nameservers.push_back(std::make_shared<Nameserver>(address)); }
+    void add_nameserver(const std::string &domain) { nameservers.push_back(std::make_shared<Nameserver>(domain)); }
+    void add_nameserver(std::string &&domain) {
+        nameservers.push_back(std::make_shared<Nameserver>(std::move(domain)));
+    }
 };
 
 class ZoneResolutionGuard {

@@ -84,7 +84,7 @@ Resolver::Resolver(ResolverConfig config)
         root_zone = new_zone(".");
         for (auto ip : ROOT_IP) {
             if (inet_pton(AF_INET, ip, &ip_address) != 1) throw std::runtime_error("Failed to add root nameservers");
-            root_zone->nameservers.emplace_back(ip_address);
+            root_zone->add_nameserver(ip_address);
         }
         if (dnssec != FeatureState::Disable) root_zone->dss.assign_range(ROOT_DS);
     }
@@ -95,17 +95,15 @@ Resolver::Resolver(ResolverConfig config)
         load_resolve_config(*resolve_config_zone);
     }
 
-    if (config.nameserver.has_value()) {
+    if (config.nameserver.has_value() && dnssec != FeatureState::Require) {
+        specified_zone = new_zone(".");
+        specified_zone->enable_dnssec = false;
+
         const auto &address_or_domain = config.nameserver.value();
         if (inet_pton(AF_INET, address_or_domain.c_str(), &ip_address) == 1) {
-            if (dnssec != FeatureState::Require) {
-                specified_zone = new_zone(".");
-                specified_zone->enable_dnssec = false;
-                specified_zone->nameservers.emplace_back(ip_address);
-            }
+            specified_zone->add_nameserver(ip_address);
         } else {
-            specified_zone = new_zone(".");
-            specified_zone->nameservers.emplace_back(fully_qualify_domain(address_or_domain));
+            specified_zone->add_nameserver(address_or_domain);
         }
     }
 
@@ -237,14 +235,14 @@ void Resolver::load_resolve_config(Zone &zone) const {
         auto ip_str = line.data() + address_start_idx;
         line[address_end_idx + 1] = '\0';
 
-        if (inet_pton(AF_INET, ip_str, &ip_address) == 1) zone.nameservers.emplace_back(ip_address);
+        if (inet_pton(AF_INET, ip_str, &ip_address) == 1) zone.add_nameserver(ip_address);
     }
 
     // If no nameserver entries are present, the default is to use the local nameserver.
     if (zone.nameservers.empty()) {
         auto result = inet_pton(AF_INET, "127.0.0.1", &ip_address);
         assert(result == 1);
-        zone.nameservers.emplace_back(ip_address);
+        zone.add_nameserver(ip_address);
     }
 }
 
@@ -370,14 +368,15 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
 
         // Try asking every nameserver in random order.
         std::ranges::shuffle(zone->nameservers, rng);
-        for (auto it = zone->nameservers.begin(); it != zone->nameservers.end(); ++it) {
-            auto &nameserver = *it;
+        for (size_t i = 0; i < zone->nameservers.size(); i++) {
+            auto nameserver = zone->nameservers[i];
             try {
                 // If nameserver has only the domain, get the address.
-                if (std::holds_alternative<std::string>(nameserver.address)) {
+                if (std::holds_alternative<std::string>(nameserver->address)) {
+                    // TODO: better way than `is_being_resolved`,
                     // Do not use this zone while it is being resolver to avoid infinite recursion.
                     ZoneResolutionGuard zone_guard{*zone};
-                    auto opt_a_rrset = resolve_rec(std::get<std::string>(nameserver.address), RRType::A, depth + 1);
+                    auto opt_a_rrset = resolve_rec(std::get<std::string>(nameserver->address), RRType::A, depth + 1);
 
                     if (!opt_a_rrset.has_value() || opt_a_rrset->empty()) {
                         throw std::runtime_error("Failed to get nameserver's address");
@@ -386,10 +385,10 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     auto a_rrset = rrset_to_data<A>(std::move(opt_a_rrset.value()));
                     std::ranges::shuffle(a_rrset, rng);
 
-                    nameserver.address = a_rrset[0].address;
-                    for (size_t i = 1; i < a_rrset.size(); i++) zone->nameservers.emplace_back(a_rrset[i].address);
+                    nameserver->address = a_rrset[0].address;
+                    for (size_t j = 1; j < a_rrset.size(); j++) zone->add_nameserver(a_rrset[j].address);
                 }
-                address.sin_addr.s_addr = std::get<in_addr_t>(nameserver.address);
+                address.sin_addr.s_addr = std::get<in_addr_t>(nameserver->address);
 
                 if (verbose) {
                     char ip_addr_buf[INET_ADDRSTRLEN];
@@ -398,15 +397,15 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     std::println("Resolving \"{}\" using {} ({})", sname, address_str, zone->domain);
                 }
 
-                auto payload_size = nameserver.udp_payload_size > 0
-                                        ? nameserver.udp_payload_size
+                auto payload_size = nameserver->udp_payload_size > 0
+                                        ? nameserver->udp_payload_size
                                         : (zone->enable_edns ? EDNS_UDP_PAYLOAD_SIZE : STANDARD_UDP_PAYLOAD_SIZE);
 
                 // Write and send the request.
                 buffer.reserve(payload_size);
                 buffer.clear();
                 auto id = write_request(buffer, payload_size, sname, rr_type, enable_rd, zone->enable_edns,
-                                        zone->enable_dnssec, zone->enable_cookies, nameserver.cookies);
+                                        zone->enable_dnssec, zone->enable_cookies, nameserver->cookies);
                 udp_send(buffer, address);
 
                 // Ensure buffer is big enough to receive the response.
@@ -423,7 +422,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
 
                         rcode = static_cast<RCode>((static_cast<uint16_t>(opt.upper_extended_rcode) << 4)
                                                    | std::to_underlying(rcode));
-                        nameserver.udp_payload_size = opt.udp_payload_size;
+                        nameserver->udp_payload_size = opt.udp_payload_size;
 
                         if (!opt.dnssec_ok) zone_disable_dnssec(*zone);
 
@@ -432,10 +431,10 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                             if (!opt.cookies.has_value()) {
                                 zone_disable_cookies(*zone);
                             } else {
-                                if (opt.cookies->client != nameserver.cookies.client) {
+                                if (opt.cookies->client != nameserver->cookies.client) {
                                     throw std::runtime_error("Wrong client cookie");
                                 }
-                                nameserver.cookies.server = std::move(opt.cookies->server);
+                                nameserver->cookies.server = std::move(opt.cookies->server);
                             }
                         }
                     } else {
@@ -535,9 +534,9 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     auto &ns_domain = std::get<NS>(rr.data).domain;
                     auto a_rrset = rrset_to_data<A>(filter_rrset(response.additional, RRType::A, ns_domain));
                     if (a_rrset.empty()) {
-                        referral_zone->nameservers.emplace_back(std::move(ns_domain));
+                        referral_zone->add_nameserver(std::move(ns_domain));
                     } else {
-                        for (auto &a_rr : a_rrset) referral_zone->nameservers.emplace_back(a_rr.address);
+                        for (auto &a_rr : a_rrset) referral_zone->add_nameserver(a_rr.address);
                     }
                 }
 
@@ -567,8 +566,8 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 }
             } catch (const bad_cookie_error &e) {
                 // Retry the same nameserver with the new server cookie before trying a different nameserver.
-                if (!nameserver.sent_bad_cookie) it--;
-                nameserver.sent_bad_cookie = true;
+                if (!nameserver->sent_bad_cookie) i--;
+                nameserver->sent_bad_cookie = true;
             } catch (const std::exception &e) {
                 // Nameserver error, try asking the different nameserver if there are any left.
                 if (verbose) std::println(stderr, "Failed to resolve the domain: {}", e.what());
