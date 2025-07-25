@@ -78,6 +78,8 @@ enum class SigningAlgorithm : uint8_t {
     RSASHA512 = 10,
     ECDSAP256SHA256 = 13,
     ECDSAP384SHA384 = 14,
+    ED25519 = 15,
+    ED448 = 16,
 };
 
 // https://www.iana.org/assignments/ds-rr-types/ds-rr-types.xhtml

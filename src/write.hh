@@ -35,7 +35,7 @@ inline void write_u32(std::vector<uint8_t> &buffer, uint32_t value) {
 }
 
 template <std::input_iterator T>
-void write(std::vector<uint8_t> &buffer, T start, size_t length) {
+void write_bytes(std::vector<uint8_t> &buffer, T start, size_t length) {
     buffer.insert(buffer.end(), start, start + length);
 }
 
@@ -49,7 +49,7 @@ inline void write_domain(std::vector<uint8_t> &buffer, const std::string &domain
     while (!current.empty()) {
         auto label_length = current.find('.');
         write_u8(buffer, static_cast<uint8_t>(label_length));
-        write(buffer, current.cbegin(), label_length);
+        write_bytes(buffer, current.cbegin(), label_length);
         current.remove_prefix(label_length + 1);
     }
     write_u8(buffer, 0);

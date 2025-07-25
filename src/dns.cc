@@ -57,8 +57,8 @@ uint16_t write_request(std::vector<uint8_t> &buffer, uint16_t payload_size, cons
             write_u16(buffer, 4 + option_length);
             write_u16(buffer, OptionCode::Cookies);
             write_u16(buffer, option_length);
-            write(buffer, reinterpret_cast<uint8_t *>(&client_cookie), sizeof(client_cookie));
-            write(buffer, cookies.server.cbegin(), cookies.server.size());
+            write_bytes(buffer, reinterpret_cast<uint8_t *>(&client_cookie), sizeof(client_cookie));
+            write_bytes(buffer, cookies.server.cbegin(), cookies.server.size());
         } else {
             // No options.
             write_u16(buffer, 0);

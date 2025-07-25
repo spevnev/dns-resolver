@@ -101,6 +101,12 @@ static EVP_PKEY_unique_ptr load_ecdsa_key(const std::vector<uint8_t> &dnskey, co
     return EVP_PKEY_unique_ptr{pkey};
 }
 
+static EVP_PKEY_unique_ptr load_eddsa_key(const std::vector<uint8_t> &dnskey, int type) {
+    auto pkey = EVP_PKEY_new_raw_public_key(type, NULL, dnskey.data(), dnskey.size());
+    if (pkey == nullptr) throw std::runtime_error("Failed to load EdDSA key");
+    return EVP_PKEY_unique_ptr{pkey};
+}
+
 // Converts public key from the format used by DNSSEC into the format used by OpenSSL.
 static EVP_PKEY_unique_ptr load_dnskey(const DNSKEY &dnskey) {
     switch (dnskey.algorithm) {
@@ -108,12 +114,14 @@ static EVP_PKEY_unique_ptr load_dnskey(const DNSKEY &dnskey) {
         case SigningAlgorithm::RSASHA256:
         case SigningAlgorithm::RSASHA512: return load_rsa_key(dnskey.key);
         case SigningAlgorithm::ECDSAP256SHA256:
-            if (dnskey.key.size() != 64) throw std::runtime_error("Unknown signing algorithm");
+            if (dnskey.key.size() != 64) throw std::runtime_error("Invalid key length");
             return load_ecdsa_key(dnskey.key, "prime256v1");
         case SigningAlgorithm::ECDSAP384SHA384:
-            if (dnskey.key.size() != 96) throw std::runtime_error("Unknown signing algorithm");
+            if (dnskey.key.size() != 96) throw std::runtime_error("Invalid key length");
             return load_ecdsa_key(dnskey.key, "secp384r1");
-        default: throw std::runtime_error("Unknown signing algorithm");
+        case SigningAlgorithm::ED25519: return load_eddsa_key(dnskey.key, EVP_PKEY_ED25519);
+        case SigningAlgorithm::ED448:   return load_eddsa_key(dnskey.key, EVP_PKEY_ED448);
+        default:                        throw std::runtime_error("Unknown signing algorithm");
     }
 }
 
@@ -146,8 +154,8 @@ static std::vector<uint8_t> load_signature(const RRSIG &rrsig) {
         case SigningAlgorithm::RSASHA1:
         case SigningAlgorithm::RSASHA256:
         case SigningAlgorithm::RSASHA512:
-            // RSA signature format does not need to be converted.
-            return rrsig.signature;
+        case SigningAlgorithm::ED25519:
+        case SigningAlgorithm::ED448:     return rrsig.signature;
         case SigningAlgorithm::ECDSAP256SHA256:
             if (rrsig.signature.size() != 64) throw std::runtime_error("Invalid RRSIG size");
             return load_ecdsa_signature(rrsig.signature);
@@ -174,6 +182,8 @@ static const EVP_MD *get_rrsig_digest_algorithm(SigningAlgorithm algorithm) {
         case SigningAlgorithm::ECDSAP256SHA256: return EVP_sha256();
         case SigningAlgorithm::ECDSAP384SHA384: return EVP_sha384();
         case SigningAlgorithm::RSASHA512:       return EVP_sha512();
+        case SigningAlgorithm::ED25519:
+        case SigningAlgorithm::ED448:           return nullptr;
         default:                                throw std::runtime_error("Unknown digest algorithm");
     }
 }
@@ -242,6 +252,91 @@ static std::vector<RRWithData> add_data_to_rrset(const std::vector<RR> &rrset) {
     return result;
 }
 
+class RRSIGDigest {
+public:
+    RRSIGDigest(EVP_MD_CTX *ctx, const EVP_MD *algorithm, EVP_PKEY *pkey) : ctx(ctx) {
+        if (EVP_DigestVerifyInit(ctx, nullptr, algorithm, nullptr, pkey) != 1) {
+            throw std::runtime_error("Failed to initialize RRSIG digest");
+        }
+    }
+    virtual ~RRSIGDigest() = default;
+
+    virtual void update(const std::vector<uint8_t> &data) = 0;
+    virtual void update(uint16_t value) = 0;
+    virtual void update(uint32_t value) = 0;
+    virtual bool verify(const std::vector<uint8_t> &signature) = 0;
+
+    template <CastableEnum<uint16_t> T>
+    void update(T value) {
+        update(std::to_underlying(value));
+    }
+
+protected:
+    EVP_MD_CTX *ctx;
+};
+
+class RRSIGStreamDigest : public RRSIGDigest {
+public:
+    RRSIGStreamDigest(EVP_MD_CTX *ctx, const EVP_MD *algorithm, EVP_PKEY *pkey) : RRSIGDigest(ctx, algorithm, pkey) {}
+
+    virtual void update(const std::vector<uint8_t> &data) {
+        if (EVP_DigestVerifyUpdate(ctx, data.data(), data.size()) != 1) {
+            throw std::runtime_error("Failed to update RRSIG digest");
+        }
+    }
+
+    virtual void update(uint16_t value) {
+        auto value_net = htons(value);
+        if (EVP_DigestVerifyUpdate(ctx, &value_net, sizeof(value_net)) != 1) {
+            throw std::runtime_error("Failed to update RRSIG digest");
+        }
+    }
+
+    virtual void update(uint32_t value) {
+        auto value_net = htonl(value);
+        if (EVP_DigestVerifyUpdate(ctx, &value_net, sizeof(value_net)) != 1) {
+            throw std::runtime_error("Failed to update RRSIG digest");
+        }
+    }
+
+    virtual bool verify(const std::vector<uint8_t> &signature) {
+        return EVP_DigestVerifyFinal(ctx, signature.data(), signature.size()) == 1;
+    }
+};
+
+class RRSIGOneShotDigest : public RRSIGDigest {
+public:
+    RRSIGOneShotDigest(EVP_MD_CTX *ctx, const EVP_MD *algorithm, EVP_PKEY *pkey)
+        : RRSIGDigest(ctx, algorithm, pkey), buffer() {}
+
+    virtual void update(const std::vector<uint8_t> &data) { buffer.append_range(data); }
+    virtual void update(uint16_t value) { write_u16(buffer, value); }
+    virtual void update(uint32_t value) { write_u32(buffer, value); }
+
+    virtual bool verify(const std::vector<uint8_t> &signature) {
+        return EVP_DigestVerify(ctx, signature.data(), signature.size(), buffer.data(), buffer.size()) == 1;
+    }
+
+private:
+    std::vector<uint8_t> buffer;
+};
+
+static std::unique_ptr<RRSIGDigest> new_rrsig_digest(EVP_MD_CTX *ctx, const DNSKEY &dnskey) {
+    auto algorithm = get_rrsig_digest_algorithm(dnskey.algorithm);
+    auto pkey = load_dnskey(dnskey);
+
+    switch (dnskey.algorithm) {
+        case SigningAlgorithm::RSASHA1:
+        case SigningAlgorithm::RSASHA256:
+        case SigningAlgorithm::ECDSAP256SHA256:
+        case SigningAlgorithm::ECDSAP384SHA384:
+        case SigningAlgorithm::RSASHA512:       return std::make_unique<RRSIGStreamDigest>(ctx, algorithm, pkey.get());
+        case SigningAlgorithm::ED25519:
+        case SigningAlgorithm::ED448:           return std::make_unique<RRSIGOneShotDigest>(ctx, algorithm, pkey.get());
+        default:                                throw std::runtime_error("Unknown digest algorithm");
+    }
+}
+
 int get_ds_digest_size(DigestAlgorithm algorithm) {
     auto digest_size = EVP_MD_get_size(get_ds_digest_algorithm(algorithm));
     if (digest_size <= 0) throw std::runtime_error("Failed to get digest size");
@@ -301,33 +396,22 @@ bool verify_rrsig(const std::vector<RR> &rrset, const std::vector<DNSKEY> &dnske
                     if (rrsig.algorithm != dnskey.algorithm) continue;
                     if (rrsig.signer_name != zone_domain) continue;
 
-                    auto digest_algorithm = get_rrsig_digest_algorithm(dnskey.algorithm);
-                    auto pkey = load_dnskey(dnskey);
-
-                    if (EVP_DigestVerifyInit(ctx.get(), nullptr, digest_algorithm, nullptr, pkey.get()) != 1) continue;
-                    if (EVP_DigestVerifyUpdate(ctx.get(), rrsig.data.data(), rrsig.data.size()) != 1) continue;
-
+                    auto digest = new_rrsig_digest(ctx.get(), dnskey);
+                    digest->update(rrsig.data);
                     for (const auto &rr_with_data : rrs_with_data) {
                         const RR &rr = rr_with_data.rr;
 
                         canonical_domain.clear();
                         write_domain(canonical_domain, rr.domain);
-                        uint16_t type_net = htons(std::to_underlying(rr.type));
-                        uint16_t class_net = htons(std::to_underlying(DNSClass::Internet));
-                        uint32_t ttl_net = htonl(rrsig.original_ttl);
-                        uint16_t data_size_net = htons(rr_with_data.data.size());
-                        if (EVP_DigestVerifyUpdate(ctx.get(), canonical_domain.data(), canonical_domain.size()) != 1
-                            || EVP_DigestVerifyUpdate(ctx.get(), &type_net, sizeof(type_net)) != 1 ||         //
-                            EVP_DigestVerifyUpdate(ctx.get(), &class_net, sizeof(class_net)) != 1 ||          //
-                            EVP_DigestVerifyUpdate(ctx.get(), &ttl_net, sizeof(ttl_net)) != 1 ||              //
-                            EVP_DigestVerifyUpdate(ctx.get(), &data_size_net, sizeof(data_size_net)) != 1 ||  //
-                            EVP_DigestVerifyUpdate(ctx.get(), rr_with_data.data.data(), rr_with_data.data.size())
-                                != 1) {
-                            throw std::runtime_error("Failed to calculate RRSIG digest");
-                        }
-                    }
 
-                    if (EVP_DigestVerifyFinal(ctx.get(), signature.data(), signature.size()) == 1) return true;
+                        digest->update(canonical_domain);
+                        digest->update(rr.type);
+                        digest->update(DNSClass::Internet);
+                        digest->update(rrsig.original_ttl);
+                        digest->update(static_cast<uint16_t>(rr_with_data.data.size()));
+                        digest->update(rr_with_data.data);
+                    }
+                    if (digest->verify(signature)) return true;
                 } catch (...) {
                     // Try different DNSKEY.
                     continue;
