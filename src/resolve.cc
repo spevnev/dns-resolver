@@ -130,7 +130,7 @@ std::optional<std::vector<RR>> Resolver::resolve(const std::string &domain, RRTy
 
 std::string Resolver::fully_qualify_domain(const std::string &domain) const {
     std::string fqd;
-    fqd.reserve(domain.length() + 1);
+    fqd.reserve(domain.size() + 1);
 
     size_t label_index = 0;
     for (size_t i = 0; i < domain.size(); i++) {
@@ -264,7 +264,7 @@ std::shared_ptr<Zone> Resolver::find_zone(const std::string &domain) const {
         }
 
         auto next_label_index = current.find('.');
-        if (next_label_index == current.length() - 1) return nullptr;
+        if (next_label_index == current.size() - 1) return nullptr;
         current.remove_prefix(next_label_index + 1);
     }
 }
@@ -445,6 +445,18 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     }
                 }
 
+                if (verbose) {
+                    if (!response.answers.empty()) std::println("Answer:");
+                    for (const auto &rr : response.answers) std::println("{}", rr);
+
+                    if (!response.authority.empty()) std::println("Authority:");
+                    for (const auto &rr : response.authority) std::println("{}", rr);
+
+                    if (!response.additional.empty()) std::println("Additional:");
+                    for (const auto &rr : response.additional) std::println("{}", rr);
+                    std::println();
+                }
+
                 switch (rcode) {
                     case RCode::Success:     break;
                     case RCode::FormatError: throw std::runtime_error("Nameserver is unable to interpret query"); break;
@@ -461,18 +473,6 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     case RCode::BadVersion: throw std::runtime_error("Nameserver does not support EDNS"); break;
                     case RCode::BadCookie:  throw bad_cookie_error(); break;
                     default:                throw std::runtime_error("Unknown response code");
-                }
-
-                if (verbose) {
-                    if (!response.answers.empty()) std::println("Answer:");
-                    for (const auto &rr : response.answers) std::println("{}", rr);
-
-                    if (!response.authority.empty()) std::println("Authority:");
-                    for (const auto &rr : response.authority) std::println("{}", rr);
-
-                    if (!response.additional.empty()) std::println("Additional:");
-                    for (const auto &rr : response.additional) std::println("{}", rr);
-                    std::println();
                 }
 
                 // Follow the CNAMEs before looking for the answer.

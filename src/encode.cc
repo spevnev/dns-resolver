@@ -4,7 +4,7 @@
 #include <vector>
 
 static const char *BASE64_TABLE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-static const char *BASE32_TABLE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+static const char *BASE32_TABLE = "0123456789abcdefghijklmnopqrstuv";
 static const char *HEX_TABLE = "0123456789ABCDEF";
 
 std::string base64_encode(const std::vector<uint8_t> &src) {
@@ -35,6 +35,7 @@ std::string base64_encode(const std::vector<uint8_t> &src) {
     return output;
 }
 
+// Base 32 Encoding with Extended Hex Alphabet.
 std::string base32_encode(const std::vector<uint8_t> &src) {
     std::string output;
     output.reserve(((src.size() + 4) / 5) * 8);

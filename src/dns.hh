@@ -292,7 +292,7 @@ struct std::formatter<RR> : std::formatter<string_view> {
                 const auto &nsec3 = std::get<NSEC3>(rr.data);
                 std::format_to(out, "{} {} {} {} {} (", std::to_underlying(nsec3.algorithm), nsec3.flags,
                                nsec3.iterations, nsec3.salt.empty() ? "-" : hex_string_encode(nsec3.salt),
-                               hex_string_encode(nsec3.next_domain_hash));
+                               base32_encode(nsec3.next_domain_hash));
                 for (size_t i = 0; i < nsec3.types.size(); i++) {
                     if (i > 0) std::format_to(out, " ");
                     std::format_to(out, "{}", nsec3.types[i]);

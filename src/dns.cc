@@ -326,9 +326,9 @@ private:
 
             uint16_t upper_half = static_cast<uint16_t>(window_block) << 8;
             for (int i = 0; i < bitmap_length; i++) {
-                for (int j = 7; j >= 0; j--) {
-                    if (bitmap[i] & 1) rr_types.push_back(static_cast<RRType>(upper_half | (i * 8 + j)));
-                    bitmap[i] >>= 1;
+                for (int j = 0; j < 7; j++) {
+                    if (bitmap[i] & 0b10000000) rr_types.push_back(static_cast<RRType>(upper_half | (i * 8 + j)));
+                    bitmap[i] <<= 1;
                 }
             }
         }
@@ -361,6 +361,9 @@ private:
 
         dnskey.protocol = read_u8();
         dnskey.algorithm = read_u8<SigningAlgorithm>();
+
+        if (!dnskey.is_zone_key) throw std::runtime_error("DNSKEY does not have Zone Key flag set");
+        if (dnskey.protocol != DNSKEY_PROTOCOL) throw std::runtime_error("Invalid DNSKEY protocol");
 
         // The rest of the data is the key.
         auto key_size = data_length - 4;

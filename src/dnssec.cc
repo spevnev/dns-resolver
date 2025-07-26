@@ -431,13 +431,6 @@ bool verify_dnskeys(const std::vector<RR> &dnskey_rrset, const std::vector<DS> &
                     const std::vector<RRSIG> &rrsigs) {
     if (dnskey_rrset.empty() || dss.empty() || rrsigs.empty()) return false;
 
-    // Ensure that all DNSKEYs have the correct protocol value and are zone keys.
-    for (const auto &dnskey_rr : dnskey_rrset) {
-        const auto &dnskey = std::get<DNSKEY>(dnskey_rr.data);
-        if (dnskey.protocol != DNSKEY_PROTOCOL) return false;
-        if (!dnskey.is_zone_key) return false;
-    }
-
     EVP_MD_CTX_unique_ptr ctx{EVP_MD_CTX_new()};
     if (ctx == nullptr) return false;
 
@@ -447,6 +440,7 @@ bool verify_dnskeys(const std::vector<RR> &dnskey_rrset, const std::vector<DS> &
         try {
             auto digest_algorithm = get_ds_digest_algorithm(ds.digest_algorithm);
             auto digest_size = EVP_MD_get_size(digest_algorithm);
+            if (digest_size <= 0) continue;
 
             for (const auto &dnskey_rr : dnskey_rrset) {
                 const auto &dnskey = std::get<DNSKEY>(dnskey_rr.data);
@@ -454,12 +448,12 @@ bool verify_dnskeys(const std::vector<RR> &dnskey_rrset, const std::vector<DS> &
 
                 canonical_domain.clear();
                 write_domain(canonical_domain, dnskey_rr.domain);
-                digest.resize(digest_size);
 
-                if (EVP_DigestInit_ex(ctx.get(), digest_algorithm, nullptr) != 1 ||                        //
+                digest.resize(digest_size);
+                if (EVP_DigestInit(ctx.get(), digest_algorithm) != 1 ||                                    //
                     EVP_DigestUpdate(ctx.get(), canonical_domain.data(), canonical_domain.size()) != 1 ||  //
                     EVP_DigestUpdate(ctx.get(), dnskey.data.data(), dnskey.data.size()) != 1 ||            //
-                    EVP_DigestFinal_ex(ctx.get(), digest.data(), nullptr) != 1) {
+                    EVP_DigestFinal(ctx.get(), digest.data(), nullptr) != 1) {
                     continue;
                 }
 

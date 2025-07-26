@@ -39,7 +39,7 @@ void write_bytes(std::vector<uint8_t> &buffer, T start, size_t length) {
     buffer.insert(buffer.end(), start, start + length);
 }
 
-inline void write_domain(std::vector<uint8_t> &buffer, const std::string &domain) {
+inline void write_domain(std::vector<uint8_t> &buffer, std::string_view domain) {
     if (domain == ".") {
         write_u8(buffer, 0);
         return;
