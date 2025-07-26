@@ -240,8 +240,10 @@ static std::vector<RRWithData> add_data_to_rrset(const std::vector<RR> &rrset) {
                 auto address_ptr = reinterpret_cast<const uint8_t *>(&address);
                 rr_with_data.data.assign(address_ptr, address_ptr + sizeof(address));
             } break;
-            case RRType::DS:     rr_with_data.data = std::get<DS>(rr.data).data; break;      // TODO: avoid copying
-            case RRType::DNSKEY: rr_with_data.data = std::get<DNSKEY>(rr.data).data; break;  // TODO: avoid copying
+            case RRType::DS:     rr_with_data.data = std::get<DS>(rr.data).data; break;
+            case RRType::NSEC:   rr_with_data.data = std::get<NSEC>(rr.data).data; break;
+            case RRType::DNSKEY: rr_with_data.data = std::get<DNSKEY>(rr.data).data; break;
+            case RRType::NSEC3:  rr_with_data.data = std::get<NSEC3>(rr.data).data; break;
             case RRType::OPT:    throw std::runtime_error("OPT RR cannot have RRSIG");
             case RRType::RRSIG:  throw std::runtime_error("RRSIG RR cannot have RRSIG");
             default:             throw std::runtime_error("Unknown RR type");

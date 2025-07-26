@@ -26,6 +26,7 @@ struct Nameserver {
 };
 
 struct Zone {
+    // Do not ask the zone whose nameserver is being resolved.
     bool is_being_resolved;
     std::string domain;
     bool enable_edns;
@@ -50,15 +51,6 @@ struct Zone {
     void add_nameserver(std::string &&domain) {
         nameservers.push_back(std::make_shared<Nameserver>(std::move(domain)));
     }
-};
-
-class ZoneResolutionGuard {
-public:
-    ZoneResolutionGuard(Zone &zone) : zone(zone) { zone.is_being_resolved = true; }
-    ~ZoneResolutionGuard() { zone.is_being_resolved = false; }
-
-private:
-    Zone &zone;
 };
 
 // https://www.cppstories.com/2021/heterogeneous-access-cpp20/
@@ -93,7 +85,7 @@ public:
     std::optional<std::vector<RR>> resolve(const std::string &domain, RRType rr_type);
 
 private:
-    std::chrono::duration<uint64_t, std::milli> query_timeout_duration;
+    std::chrono::duration<uint64_t, std::milli> timeout_duration;
     uint64_t udp_timeout_ms;
     uint16_t port;
     bool verbose, enable_rd;

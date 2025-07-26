@@ -336,13 +336,18 @@ private:
     }
 
     NSEC read_nsec_data(uint16_t data_length) {
-        NSEC nsec;
-
         auto data_offset = offset;
-        nsec.next_domain = read_domain();
-        auto domain_length = offset - data_offset;
 
-        nsec.types = read_rr_type_bitmap(data_length - domain_length);
+        NSEC nsec;
+        nsec.next_domain = read_domain();
+
+        auto domain_size = offset - data_offset;
+        nsec.types = read_rr_type_bitmap(data_length - domain_size);
+
+        // Save data to verify the RRSIG later.
+        ResponseReader data_reader{buffer, data_offset};
+        data_reader.read(data_length, nsec.data);
+
         return nsec;
     }
 
@@ -384,6 +389,10 @@ private:
 
         auto nsec3_data_length = offset - data_offset;
         nsec3.types = read_rr_type_bitmap(data_length - nsec3_data_length);
+
+        // Save data to verify the RRSIG later.
+        ResponseReader data_reader{buffer, data_offset};
+        data_reader.read(data_length, nsec3.data);
 
         return nsec3;
     }

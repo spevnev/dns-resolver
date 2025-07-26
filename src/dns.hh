@@ -166,6 +166,7 @@ struct RRSIG {
 struct NSEC {
     std::string next_domain;
     std::vector<RRType> types;
+    std::vector<uint8_t> data;
 };
 
 struct DNSKEY {
@@ -186,6 +187,7 @@ struct NSEC3 {
     std::vector<uint8_t> salt;
     std::vector<uint8_t> next_domain_hash;
     std::vector<RRType> types;
+    std::vector<uint8_t> data;
 };
 
 struct RR {

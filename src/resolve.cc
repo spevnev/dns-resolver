@@ -59,7 +59,7 @@ public:
 };
 
 Resolver::Resolver(ResolverConfig config)
-    : query_timeout_duration(config.timeout_ms),
+    : timeout_duration(config.timeout_ms),
       udp_timeout_ms(std::max(config.timeout_ms / 5, MIN_UDP_TIMEOUT_MS)),
       port(config.port),
       verbose(config.verbose),
@@ -116,7 +116,10 @@ Resolver::~Resolver() { close(fd); }
 
 std::optional<std::vector<RR>> Resolver::resolve(const std::string &domain, RRType rr_type) {
     try {
-        timeout_instant = std::chrono::steady_clock::now() + query_timeout_duration;
+        // DNSSEC is disabled for queries of type ANY.
+        if (dnssec == FeatureState::Require && rr_type == RRType::ANY) return std::nullopt;
+
+        timeout_instant = std::chrono::steady_clock::now() + timeout_duration;
         set_socket_timeout(udp_timeout_ms);
         return resolve_rec(fully_qualify_domain(domain), rr_type, 0);
     } catch (const std::exception &e) {
@@ -373,10 +376,10 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
             try {
                 // If nameserver has only the domain, get the address.
                 if (std::holds_alternative<std::string>(nameserver->address)) {
-                    // TODO: better way than `is_being_resolved`,
                     // Do not use this zone while it is being resolver to avoid infinite recursion.
-                    ZoneResolutionGuard zone_guard{*zone};
+                    zone->is_being_resolved = true;
                     auto opt_a_rrset = resolve_rec(std::get<std::string>(nameserver->address), RRType::A, depth + 1);
+                    zone->is_being_resolved = false;
 
                     if (!opt_a_rrset.has_value() || opt_a_rrset->empty()) {
                         throw std::runtime_error("Failed to get nameserver's address");
@@ -498,21 +501,16 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 auto result = filter_rrset(response.answers, rr_type, sname);
                 if (!result.empty()) {
                     // Check that the answer is secure, verify RRSIGs.
-                    if (zone->enable_dnssec) {
+                    if (zone->enable_dnssec && rr_type != RRType::ANY) {
                         auto rrsigs = get_rrsigs(response.answers, sname, rr_type);
                         if (rr_type == RRType::DNSKEY) {
                             if (!verify_dnskeys(result, zone->dss, zone->domain, rrsigs)) {
-                                if (zone->dss.empty() && dnssec != FeatureState::Require) {
-                                    // Delegation is insecure, but we can still use DNSSEC within the zone.
-                                } else {
-                                    zone_disable_dnssec(*zone);
-                                }
+                                zone_disable_dnssec(*zone);
                             }
                         } else {
                             if (!verify_rrsig(result, zone->dnskeys, zone->domain, rrsigs)) zone_disable_dnssec(*zone);
                         }
                     }
-
                     return result;
                 }
 
@@ -564,10 +562,14 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     if (next_zone == nullptr) return std::nullopt;
                     break;
                 }
-            } catch (const bad_cookie_error &e) {
-                // Retry the same nameserver with the new server cookie before trying a different nameserver.
-                if (!nameserver->sent_bad_cookie) i--;
-                nameserver->sent_bad_cookie = true;
+            } catch (const bad_cookie_error &) {
+                if (!nameserver->sent_bad_cookie) {
+                    // Retry the same nameserver with the new server cookie once.
+                    i--;
+                    nameserver->sent_bad_cookie = true;
+                } else {
+                    // Try a different nameserver.
+                }
             } catch (const std::exception &e) {
                 // Nameserver error, try asking the different nameserver if there are any left.
                 if (verbose) std::println(stderr, "Failed to resolve the domain: {}", e.what());
