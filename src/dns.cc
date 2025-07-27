@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include "dnssec.hh"
@@ -312,8 +313,8 @@ private:
         return rrsig;
     }
 
-    std::vector<RRType> read_rr_type_bitmap(uint16_t data_length) {
-        std::vector<RRType> rr_types;
+    std::unordered_set<RRType> read_rr_type_bitmap(uint16_t data_length) {
+        std::unordered_set<RRType> rr_types;
         std::vector<uint8_t> bitmap;
         while (data_length > 0) {
             auto window_block = read_u8();
@@ -326,9 +327,9 @@ private:
 
             uint16_t upper_half = static_cast<uint16_t>(window_block) << 8;
             for (int i = 0; i < bitmap_length; i++) {
-                for (int j = 0; j < 7; j++) {
-                    if (bitmap[i] & 0b10000000) rr_types.push_back(static_cast<RRType>(upper_half | (i * 8 + j)));
-                    bitmap[i] <<= 1;
+                for (int j = 7; j >= 0; j--) {
+                    if (bitmap[i] & 1) rr_types.insert(static_cast<RRType>(upper_half | (i * 8 + j)));
+                    bitmap[i] >>= 1;
                 }
             }
         }

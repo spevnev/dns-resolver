@@ -17,9 +17,9 @@ int main(void) {
 
     ASSERT(nsec.next_domain == "next." TEST_DOMAIN);
     ASSERT(nsec.types.size() == 3);
-    ASSERT(nsec.types[0] == RRType::A);
-    ASSERT(nsec.types[1] == RRType::DS);
-    ASSERT(std::to_underlying(nsec.types[2]) == 1000);
+    ASSERT(nsec.types.contains(RRType::A));
+    ASSERT(nsec.types.contains(RRType::DS));
+    ASSERT(nsec.types.contains(static_cast<RRType>(1000)));
 
     return EXIT_SUCCESS;
 }

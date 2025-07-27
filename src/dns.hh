@@ -2,10 +2,12 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <algorithm>
 #include <cstdint>
 #include <format>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -165,7 +167,7 @@ struct RRSIG {
 
 struct NSEC {
     std::string next_domain;
-    std::vector<RRType> types;
+    std::unordered_set<RRType> types;
     std::vector<uint8_t> data;
 };
 
@@ -186,7 +188,7 @@ struct NSEC3 {
     uint16_t iterations;
     std::vector<uint8_t> salt;
     std::vector<uint8_t> next_domain_hash;
-    std::vector<RRType> types;
+    std::unordered_set<RRType> types;
     std::vector<uint8_t> data;
 };
 
@@ -223,7 +225,8 @@ struct std::formatter<RRType> : std::formatter<string_view> {
 };
 
 template <>
-struct std::formatter<RR> : std::formatter<string_view> {
+class std::formatter<RR> : public std::formatter<string_view> {
+public:
     auto format(const RR &rr, std::format_context &ctx) const {
         std::string output_string;
         auto out = std::back_inserter(output_string);
@@ -277,10 +280,7 @@ struct std::formatter<RR> : std::formatter<string_view> {
             case RRType::NSEC: {
                 const auto &nsec = std::get<NSEC>(rr.data);
                 std::format_to(out, "{} (", nsec.next_domain);
-                for (size_t i = 0; i < nsec.types.size(); i++) {
-                    if (i > 0) std::format_to(out, " ");
-                    std::format_to(out, "{}", nsec.types[i]);
-                }
+                print_types(out, nsec.types);
                 std::format_to(out, ")");
             } break;
             case RRType::DNSKEY: {
@@ -293,15 +293,26 @@ struct std::formatter<RR> : std::formatter<string_view> {
                 std::format_to(out, "{} {} {} {} {} (", std::to_underlying(nsec3.algorithm), nsec3.flags,
                                nsec3.iterations, nsec3.salt.empty() ? "-" : hex_string_encode(nsec3.salt),
                                base32_encode(nsec3.next_domain_hash));
-                for (size_t i = 0; i < nsec3.types.size(); i++) {
-                    if (i > 0) std::format_to(out, " ");
-                    std::format_to(out, "{}", nsec3.types[i]);
-                }
+                print_types(out, nsec3.types);
                 std::format_to(out, ")");
             } break;
             default: break;
         }
         return std::formatter<string_view>::format(output_string, ctx);
+    }
+
+private:
+    // Print set of RR types in ascending order.
+    void print_types(std::back_insert_iterator<std::string> &out, const std::unordered_set<RRType> &type_set) const {
+        std::vector<RRType> types{type_set.cbegin(), type_set.cend()};
+        std::ranges::sort(types, std::less<>{});
+
+        bool is_first = true;
+        for (auto type : types) {
+            if (!is_first) std::format_to(out, " ");
+            is_first = false;
+            std::format_to(out, "{}", type);
+        }
     }
 };
 
