@@ -365,7 +365,8 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
             if (opt_dnskey_rrset.has_value() && !opt_dnskey_rrset->empty()) {
                 zone->dnskeys = rrset_to_data<DNSKEY>(std::move(opt_dnskey_rrset.value()));
             } else {
-                zone_disable_dnssec(*zone);
+                if (zone->no_secure_delegation) zone->enable_dnssec = false;
+                else zone_disable_dnssec(*zone);
             }
         }
 
@@ -427,7 +428,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                                                    | std::to_underlying(rcode));
                         nameserver->udp_payload_size = opt.udp_payload_size;
 
-                        if (!opt.dnssec_ok) zone_disable_dnssec(*zone);
+                        if (!opt.dnssec_ok && zone->enable_dnssec) zone_disable_dnssec(*zone);
 
                         // Check and save DNS cookies.
                         if (zone->enable_cookies) {
@@ -461,11 +462,45 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     case RCode::Success:     break;
                     case RCode::FormatError: throw std::runtime_error("Nameserver is unable to interpret query"); break;
                     case RCode::ServerError: throw std::runtime_error("Nameserver error"); break;
-                    case RCode::NameError:
-                        if (!response.is_authoritative) {
-                            throw std::runtime_error("Non-authoritative nameserver cannot deny the existence");
+                    case RCode::NameError:   {
+                        if (!zone->enable_dnssec) {
+                            if (!response.is_authoritative) {
+                                throw std::runtime_error("Non-authoritative nameserver cannot deny the existence");
+                            }
+                            return std::vector<RR>{};
                         }
-                        return std::vector<RR>{};
+
+                        auto nsec3_rrset = filter_rrset(response.authority, RRType::NSEC3);
+                        if (!nsec3_rrset.empty()) {
+                            for (auto &nsec3_rr : nsec3_rrset) {
+                                auto nsec3_rrsigs = get_rrsigs(response.authority, nsec3_rr.domain, RRType::NSEC3);
+                                if (!verify_rrsig({nsec3_rr}, zone->dnskeys, zone->domain, nsec3_rrsigs)) {
+                                    throw std::runtime_error("Failed to verify RRSIG");
+                                }
+                            }
+
+                            // Verify the closest encloser proof and the wildcard at it (RFC5155).
+                            auto opt_proof_result = verify_closest_encloser_proof(nsec3_rrset, sname, zone->domain);
+                            if (opt_proof_result.has_value()
+                                && find_covering_nsec3(nsec3_rrset, "*." + opt_proof_result->first, zone->domain)) {
+                                return std::vector<RR>{};
+                            }
+
+                            throw std::runtime_error("Failed to authenticate the denial of existence");
+                        } else {
+                            auto nsec_rrset = filter_rrset(response.authority, RRType::NSEC);
+                            for (auto &nsec_rr : nsec_rrset) {
+                                auto nsec_rrsigs = get_rrsigs(response.authority, nsec_rr.domain, RRType::NSEC);
+                                if (!verify_rrsig({nsec_rr}, zone->dnskeys, zone->domain, nsec_rrsigs)) {
+                                    throw std::runtime_error("Failed to verify RRSIG");
+                                }
+
+                                if (nsec_covers_domain(nsec_rr, sname)) return std::vector<RR>{};
+                            }
+                            throw std::runtime_error("Failed to authenticate the denial of existence");
+                        }
+                        throw std::runtime_error("Response must contain an NSEC(3) to prove non-existence");
+                    }
                     case RCode::NotImplemented:
                         throw std::runtime_error("Nameserver does not support this query");
                         break;
@@ -479,13 +514,12 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 bool followed_cname = false;
                 auto cname_rrset = filter_rrset(response.answers, RRType::CNAME);
                 for (;;) {
-                    auto cname_rr
-                        = std::ranges::find_if(cname_rrset, [&sname](const RR &rr) { return rr.domain == sname; });
+                    auto cname_rr = std::ranges::find_if(cname_rrset, [&](const RR &rr) { return rr.domain == sname; });
                     if (cname_rr == cname_rrset.end()) break;
 
                     if (zone->enable_dnssec) {
                         auto cname_rrsigs = get_rrsigs(response.answers, cname_rr->domain, RRType::CNAME);
-                        if (!verify_rrsig(std::vector<RR>{*cname_rr}, zone->dnskeys, zone->domain, cname_rrsigs)) {
+                        if (!verify_rrsig({*cname_rr}, zone->dnskeys, zone->domain, cname_rrsigs)) {
                             zone_disable_dnssec(*zone);
                         }
                     }
@@ -504,8 +538,16 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     if (zone->enable_dnssec && rr_type != RRType::ANY) {
                         auto rrsigs = get_rrsigs(response.answers, sname, rr_type);
                         if (rr_type == RRType::DNSKEY) {
-                            if (!verify_dnskeys(result, zone->dss, zone->domain, rrsigs)) {
-                                zone_disable_dnssec(*zone);
+                            if (zone->no_secure_delegation) {
+                                // If there are no DSs, just verify that the RRSIG was signed with one of these DNSKEYs.
+                                auto dnskeys = rrset_to_data<DNSKEY>(result);
+                                if (!verify_rrsig(result, dnskeys, zone->domain, rrsigs)) {
+                                    zone_disable_dnssec(*zone);
+                                }
+                            } else {
+                                if (!verify_dnskeys(result, zone->dss, zone->domain, rrsigs)) {
+                                    zone_disable_dnssec(*zone);
+                                }
                             }
                         } else {
                             if (!verify_rrsig(result, zone->dnskeys, zone->domain, rrsigs)) zone_disable_dnssec(*zone);
@@ -540,13 +582,65 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
 
                 if (referral_zone != nullptr) {
                     // Follow the referral.
-                    auto ds_rrset = filter_rrset(response.authority, RRType::DS);
-                    if (!ds_rrset.empty() && zone->enable_dnssec) {
-                        auto ds_rrsigs = get_rrsigs(response.authority, referral_zone->domain, RRType::DS);
-                        if (verify_rrsig(ds_rrset, zone->dnskeys, zone->domain, ds_rrsigs)) {
-                            referral_zone->dss = rrset_to_data<DS>(std::move(ds_rrset));
+                    if (zone->enable_dnssec) {
+                        auto ds_rrset = filter_rrset(response.authority, RRType::DS);
+                        if (ds_rrset.empty()) {
+                            auto nsec3_rrset = filter_rrset(response.authority, RRType::NSEC3);
+                            if (!nsec3_rrset.empty()) {
+                                for (auto &nsec3_rr : nsec3_rrset) {
+                                    auto nsec3_rrsigs = get_rrsigs(response.authority, nsec3_rr.domain, RRType::NSEC3);
+                                    if (!verify_rrsig({nsec3_rr}, zone->dnskeys, zone->domain, nsec3_rrsigs)) {
+                                        throw std::runtime_error("Failed to verify RRSIG");
+                                    }
+                                }
+
+                                auto nsec3 = find_matching_nsec3(nsec3_rrset, referral_zone->domain, zone->domain);
+                                if (nsec3.has_value()) {
+                                    if (!nsec3->types.contains(RRType::DS) && !nsec3->types.contains(RRType::CNAME)) {
+                                        referral_zone->no_secure_delegation = true;
+                                        referral_zone->enable_dnssec = nsec3->types.contains(RRType::DNSKEY);
+                                    } else {
+                                        throw std::runtime_error(
+                                            "Referral doesn't contain a DS although the NSEC confirms its existence");
+                                    }
+                                } else {
+                                    // If no NSEC3 matches the name, the next closer NSEC3 must have opt out flag set.
+                                    auto opt_proof_result = verify_closest_encloser_proof(
+                                        nsec3_rrset, referral_zone->domain, zone->domain);
+                                    if (opt_proof_result.has_value() && opt_proof_result->second.opt_out) {
+                                        referral_zone->no_secure_delegation = true;
+                                    } else {
+                                        throw std::runtime_error("Failed to authenticate the denial of existence");
+                                    }
+                                }
+                            } else {
+                                auto nsec_rrset = filter_rrset(response.authority, RRType::NSEC, referral_zone->domain);
+                                if (!nsec_rrset.empty()) {
+                                    auto nsec_rrsigs
+                                        = get_rrsigs(response.authority, referral_zone->domain, RRType::NSEC);
+                                    if (!verify_rrsig(nsec_rrset, zone->dnskeys, zone->domain, nsec_rrsigs)) {
+                                        throw std::runtime_error("Failed to verify RRSIG");
+                                    }
+
+                                    auto &nsec = std::get<NSEC>(nsec_rrset[0].data);
+                                    if (nsec.types.contains(RRType::DS) || nsec.types.contains(RRType::CNAME)) {
+                                        throw std::runtime_error(
+                                            "Referral doesn't contain a DS although the NSEC confirms its existence");
+                                    }
+
+                                    referral_zone->no_secure_delegation = true;
+                                    referral_zone->enable_dnssec = nsec.types.contains(RRType::DNSKEY);
+                                } else {
+                                    throw std::runtime_error("Referral must contain either a DS or an NSEC(3)");
+                                }
+                            }
                         } else {
-                            zone_disable_dnssec(*zone);
+                            auto ds_rrsigs = get_rrsigs(response.authority, referral_zone->domain, RRType::DS);
+                            if (verify_rrsig(ds_rrset, zone->dnskeys, zone->domain, ds_rrsigs)) {
+                                referral_zone->dss = rrset_to_data<DS>(std::move(ds_rrset));
+                            } else {
+                                zone_disable_dnssec(*zone);
+                            }
                         }
                     }
 
@@ -557,6 +651,43 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     // There is no referral and CNAME points outside of this zone, restart the search.
                     return resolve_rec(sname, rr_type, depth);
                 } else {
+                    // Failed to find DNSKEYs, end the search.
+                    if (rr_type == RRType::DNSKEY && zone->dnskeys.empty()) return std::nullopt;
+
+                    // Look for the authenticated denial of existence.
+                    if (zone->enable_dnssec) {
+                        auto nsec3_rrset = filter_rrset(response.authority, RRType::NSEC3);
+                        if (!nsec3_rrset.empty()) {
+                            for (auto &nsec3_rr : nsec3_rrset) {
+                                auto nsec3_rrsigs = get_rrsigs(response.authority, nsec3_rr.domain, RRType::NSEC3);
+                                if (!verify_rrsig({nsec3_rr}, zone->dnskeys, zone->domain, nsec3_rrsigs)) {
+                                    throw std::runtime_error("Failed to verify RRSIG");
+                                }
+                            }
+
+                            auto nsec3 = find_matching_nsec3(nsec3_rrset, sname, zone->domain);
+                            if (nsec3.has_value() && !nsec3->types.contains(rr_type)
+                                && !nsec3->types.contains(RRType::CNAME)) {
+                                return std::vector<RR>{};
+                            }
+
+                        } else {
+                            auto nsec_rrset = filter_rrset(response.authority, RRType::NSEC, sname);
+                            if (!nsec_rrset.empty()) {
+                                auto nsec_rrsigs = get_rrsigs(response.authority, sname, RRType::NSEC);
+                                if (!verify_rrsig(nsec_rrset, zone->dnskeys, zone->domain, nsec_rrsigs)) {
+                                    throw std::runtime_error("Failed to verify RRSIG");
+                                }
+
+                                auto &nsec = std::get<NSEC>(nsec_rrset[0].data);
+                                if (!nsec.types.contains(rr_type) && !nsec.types.contains(RRType::CNAME)) {
+                                    return std::vector<RR>{};
+                                }
+                            }
+                        }
+                        throw std::runtime_error("Failed to authenticate the denial of existence");
+                    }
+
                     // No referral and no answer, try querying the safe zones if there are any left.
                     next_zone = get_safe_zone(safe_zones);
                     if (next_zone == nullptr) return std::nullopt;

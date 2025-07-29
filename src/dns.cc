@@ -359,7 +359,6 @@ private:
         dnskey.flags = read_u16();
         dnskey.is_zone_key = (dnskey.flags >> 8) & 1;
         dnskey.is_secure_entry = dnskey.flags & 1;
-
         dnskey.protocol = read_u8();
         dnskey.algorithm = read_u8<SigningAlgorithm>();
 
@@ -384,6 +383,7 @@ private:
         NSEC3 nsec3;
         nsec3.algorithm = read_u8<HashAlgorithm>();
         nsec3.flags = read_u8();
+        nsec3.opt_out = nsec3.flags & 1;
         nsec3.iterations = read_u16();
         auto salt_length = read_u8();
         if (salt_length > 0) read(salt_length, nsec3.salt);

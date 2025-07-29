@@ -11,11 +11,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
 #include <vector>
 #include "dns.hh"
+#include "encode.hh"
 #include "write.hh"
 
 struct RRWithData {
@@ -23,7 +25,7 @@ struct RRWithData {
     std::vector<std::string_view> labels;
     std::vector<uint8_t> data;
 
-    RRWithData(const RR &rr) : rr(rr) {}
+    RRWithData(const RR &rr, std::vector<std::string_view> &&labels) : rr(rr), labels(labels) {}
 };
 
 using EVP_PKEY_unique_ptr = std::unique_ptr<EVP_PKEY, decltype([](auto *pkey) { EVP_PKEY_free(pkey); })>;
@@ -188,26 +190,35 @@ static const EVP_MD *get_rrsig_digest_algorithm(SigningAlgorithm algorithm) {
     }
 }
 
+static const EVP_MD *get_nsec3_hash_algorithm(HashAlgorithm algorithm) {
+    switch (algorithm) {
+        case HashAlgorithm::SHA1: return EVP_sha1();
+        default:                  throw std::runtime_error("Unknown digest algorithm");
+    }
+}
+
+static std::vector<std::string_view> domain_to_labels(const std::string_view &domain) {
+    std::vector<std::string_view> labels;
+    auto pos = domain.size() - 1;
+    while (pos > 0) {
+        auto next_pos = domain.find_last_of('.', pos - 1);
+        if (next_pos == std::string::npos) {
+            labels.emplace_back(domain.cbegin(), domain.cbegin() + pos);
+            break;
+        }
+
+        labels.emplace_back(domain.cbegin() + next_pos + 1, domain.cbegin() + pos);
+        pos = next_pos;
+    }
+    return labels;
+}
+
 static std::vector<RRWithData> add_data_to_rrset(const std::vector<RR> &rrset) {
     std::vector<RRWithData> result;
     result.reserve(rrset.size());
 
     for (const auto &rr : rrset) {
-        RRWithData rr_with_data{rr};
-
-        assert(!rr.domain.empty());
-        auto pos = rr.domain.size() - 1;
-        while (pos > 0) {
-            auto next_pos = rr.domain.find_last_of('.', pos - 1);
-            if (next_pos == std::string::npos) {
-                rr_with_data.labels.emplace_back(rr.domain.cbegin(), rr.domain.cbegin() + pos);
-                break;
-            }
-
-            rr_with_data.labels.emplace_back(rr.domain.cbegin() + next_pos + 1, rr.domain.cbegin() + pos);
-            pos = next_pos;
-        }
-
+        RRWithData rr_with_data{rr, domain_to_labels(rr.domain)};
         switch (rr.type) {
             case RRType::A: {
                 auto address = std::get<A>(rr.data).address;
@@ -339,6 +350,58 @@ static std::unique_ptr<RRSIGDigest> new_rrsig_digest(EVP_MD_CTX *ctx, const DNSK
     }
 }
 
+static int compare_domains(const std::vector<std::string_view> &a, const std::vector<std::string_view> &b) {
+    auto a_it = a.cbegin(), b_it = b.cbegin();
+    while (a_it != a.cend() && b_it != b.cend()) {
+        auto result = a_it->compare(*b_it);
+        if (result != 0) return result;
+        ++a_it, ++b_it;
+    }
+    if (a_it != a.cend()) return +1;
+    if (b_it != b.cend()) return -1;
+    return 0;
+}
+
+static bool is_domain_between(const std::string_view &domain, const std::string_view &before,
+                              const std::string_view &after) {
+    auto before_labels = domain_to_labels(before);
+    auto after_labels = domain_to_labels(after);
+    auto domain_labels = domain_to_labels(domain);
+    return compare_domains(before_labels, domain_labels) < 0 && compare_domains(domain_labels, after_labels) < 0;
+}
+
+static std::string get_nsec3_domain(const NSEC3 &nsec3, const std::string_view &domain,
+                                    const std::string &zone_domain) {
+    EVP_MD_CTX_unique_ptr ctx{EVP_MD_CTX_new()};
+    if (ctx == nullptr) throw std::runtime_error("Failed to create digest context");
+
+    auto hash_algorithm = get_nsec3_hash_algorithm(nsec3.algorithm);
+    auto digest_size = EVP_MD_get_size(hash_algorithm);
+    if (digest_size <= 0) throw std::runtime_error("Failed to get digest size");
+
+    std::vector<uint8_t> canonical_domain;
+    write_domain(canonical_domain, domain);
+
+    std::vector<uint8_t> digest(digest_size);
+    if (EVP_DigestInit(ctx.get(), hash_algorithm) != 1 ||                                      //
+        EVP_DigestUpdate(ctx.get(), canonical_domain.data(), canonical_domain.size()) != 1 ||  //
+        EVP_DigestUpdate(ctx.get(), nsec3.salt.data(), nsec3.salt.size()) != 1 ||              //
+        EVP_DigestFinal(ctx.get(), digest.data(), nullptr) != 1) {
+        throw std::runtime_error("Failed to calculate NSEC3 digest");
+    }
+
+    for (uint16_t i = 0; i < nsec3.iterations; i++) {
+        if (EVP_DigestInit(ctx.get(), hash_algorithm) != 1 ||                          //
+            EVP_DigestUpdate(ctx.get(), digest.data(), digest.size()) != 1 ||          //
+            EVP_DigestUpdate(ctx.get(), nsec3.salt.data(), nsec3.salt.size()) != 1 ||  //
+            EVP_DigestFinal(ctx.get(), digest.data(), nullptr) != 1) {
+            throw std::runtime_error("Failed to calculate NSEC3 digest");
+        }
+    }
+
+    return base32_encode(digest) + "." + zone_domain;
+}
+
 int get_ds_digest_size(DigestAlgorithm algorithm) {
     auto digest_size = EVP_MD_get_size(get_ds_digest_algorithm(algorithm));
     if (digest_size <= 0) throw std::runtime_error("Failed to get digest size");
@@ -364,16 +427,10 @@ bool verify_rrsig(const std::vector<RR> &rrset, const std::vector<DNSKEY> &dnske
 
     auto rrs_with_data = add_data_to_rrset(rrset);
     std::ranges::sort(rrs_with_data, [](const auto &a, const auto &b) {
-        auto a_it = a.labels.cbegin(), b_it = b.labels.cbegin();
-        while (a_it != a.labels.cend() && b_it != b.labels.cend()) {
-            auto result = a_it->compare(*b_it);
-            if (result != 0) return result < 0;
-            ++a_it, ++b_it;
-        }
-        if (a_it != a.labels.cend()) return false;
-        if (b_it != b.labels.cend()) return true;
+        int result = compare_domains(a.labels, b.labels);
+        if (result != 0) return result < 0;
 
-        auto result = std::memcmp(a.data.data(), b.data.data(), std::min(a.data.size(), b.data.size()));
+        result = std::memcmp(a.data.data(), b.data.data(), std::min(a.data.size(), b.data.size()));
         if (result != 0) return result < 0;
 
         return a.data.size() > b.data.size() ? false : true;
@@ -470,4 +527,66 @@ bool verify_dnskeys(const std::vector<RR> &dnskey_rrset, const std::vector<DS> &
     if (verified_dnskeys.empty()) return false;
 
     return verify_rrsig(dnskey_rrset, verified_dnskeys, zone_domain, rrsigs);
+}
+
+bool nsec_covers_domain(const RR &nsec_rr, const std::string &domain) {
+    auto &nsec = std::get<NSEC>(nsec_rr.data);
+    return is_domain_between(domain, nsec_rr.domain, nsec.next_domain);
+}
+
+std::optional<NSEC3> find_covering_nsec3(const std::vector<RR> &nsec3_rrset, const std::string_view &domain,
+                                         const std::string &zone_domain) {
+    try {
+        if (nsec3_rrset.empty()) return std::nullopt;
+        auto &nsec3 = std::get<NSEC3>(nsec3_rrset[0].data);
+
+        auto covered_domain = get_nsec3_domain(nsec3, domain, zone_domain);
+        for (auto &nsec3_rr : nsec3_rrset) {
+            auto &nsec3 = std::get<NSEC3>(nsec3_rr.data);
+            auto next_domain = base32_encode(nsec3.next_domain_hash) + "." + zone_domain;
+            if (is_domain_between(covered_domain, nsec3_rr.domain, next_domain)) return std::get<NSEC3>(nsec3_rr.data);
+        }
+    } catch (...) {
+    }
+    return std::nullopt;
+}
+
+std::optional<NSEC3> find_matching_nsec3(const std::vector<RR> &nsec3_rrset, const std::string_view &domain,
+                                         const std::string &zone_domain) {
+    try {
+        if (nsec3_rrset.empty()) return std::nullopt;
+        auto &nsec3 = std::get<NSEC3>(nsec3_rrset[0].data);
+
+        auto matching_domain = get_nsec3_domain(nsec3, domain, zone_domain);
+        for (auto &nsec3_rr : nsec3_rrset) {
+            if (nsec3_rr.domain == matching_domain) return std::get<NSEC3>(nsec3_rr.data);
+        }
+    } catch (...) {
+    }
+    return std::nullopt;
+}
+
+std::optional<std::pair<std::string, NSEC3>> verify_closest_encloser_proof(const std::vector<RR> &nsec3_rrset,
+                                                                           const std::string &domain,
+                                                                           const std::string &zone_domain) {
+    if (nsec3_rrset.empty()) return std::nullopt;
+
+    std::optional<NSEC3> next_closer;
+    std::string_view sname{domain};
+    for (;;) {
+        auto nsec3 = find_matching_nsec3(nsec3_rrset, sname, zone_domain);
+        if (nsec3.has_value()) {
+            if (!next_closer.has_value()) return std::nullopt;
+            if (nsec3->types.contains(RRType::DNAME)) return std::nullopt;
+            if (nsec3->types.contains(RRType::NS) && !nsec3->types.contains(RRType::SOA)) return std::nullopt;
+            return std::pair<std::string, NSEC3>{std::string{sname}, std::move(next_closer.value())};
+        }
+
+        next_closer = find_covering_nsec3(nsec3_rrset, sname, zone_domain);
+
+        if (sname == ".") return std::nullopt;
+        auto next_label_index = sname.find('.');
+        if (next_label_index != sname.size() - 1) next_label_index++;
+        sname.remove_prefix(next_label_index);
+    }
 }

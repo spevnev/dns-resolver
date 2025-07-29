@@ -42,6 +42,7 @@ enum class RRType : uint16_t {
     HINFO = 13,
     TXT = 16,
     AAAA = 28,
+    DNAME = 39,
     OPT = 41,
     DS = 43,
     RRSIG = 46,
@@ -185,6 +186,7 @@ struct DNSKEY {
 struct NSEC3 {
     HashAlgorithm algorithm;
     uint8_t flags;
+    bool opt_out;
     uint16_t iterations;
     std::vector<uint8_t> salt;
     std::vector<uint8_t> next_domain_hash;

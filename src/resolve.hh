@@ -28,6 +28,7 @@ struct Nameserver {
 struct Zone {
     // Do not ask the zone whose nameserver is being resolved.
     bool is_being_resolved;
+    bool no_secure_delegation;
     std::string domain;
     bool enable_edns;
     bool enable_dnssec;
@@ -38,6 +39,7 @@ struct Zone {
 
     Zone(const std::string &domain, bool enable_edns, bool enable_dnssec, bool enable_cookies)
         : is_being_resolved(false),
+          no_secure_delegation(false),
           domain(domain),
           enable_edns(enable_edns),
           enable_dnssec(enable_dnssec),
@@ -116,6 +118,14 @@ private:
     std::vector<RR> filter_rrset(std::vector<RR> &rrset, RRType rr_type) const;
     std::vector<RR> filter_rrset(std::vector<RR> &rrset, RRType rr_type, const std::string &domain) const;
     std::vector<RRSIG> get_rrsigs(std::vector<RR> &rrset, const std::string &domain, RRType rr_type_covered) const;
+
+    template <typename T>
+    std::vector<T> rrset_to_data(const std::vector<RR> &rrset) const {
+        std::vector<T> result;
+        result.reserve(rrset.size());
+        for (auto &rr : rrset) result.push_back(std::get<T>(rr.data));
+        return result;
+    }
 
     template <typename T>
     std::vector<T> rrset_to_data(std::vector<RR> &&rrset) const {
