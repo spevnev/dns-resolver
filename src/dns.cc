@@ -135,7 +135,7 @@ private:
     }
 
     template <typename T>
-        requires requires { std::is_trivially_copyable_v<T>; }
+        requires std::is_trivially_copyable_v<T>
     T read() {
         T value;
         if (offset + sizeof(value) > buffer.size()) throw std::runtime_error("Response is too short");

@@ -279,10 +279,7 @@ public:
     virtual void update(uint32_t value) = 0;
     virtual bool verify(const std::vector<uint8_t> &signature) = 0;
 
-    template <CastableEnum<uint16_t> T>
-    void update(T value) {
-        update(std::to_underlying(value));
-    }
+    void update(CastableEnum<uint16_t> auto value) { update(std::to_underlying(value)); }
 
 protected:
     EVP_MD_CTX *ctx;

@@ -13,6 +13,12 @@
 #include <vector>
 #include "dns.hh"
 
+template <typename T, typename Variant>
+inline constexpr bool IsInVariant = false;
+
+template <typename T, typename... Ts>
+inline constexpr bool IsInVariant<T, std::variant<Ts...>> = (std::same_as<T, Ts> || ...);
+
 struct Nameserver {
     std::variant<in_addr_t, std::string> address;
     uint16_t udp_payload_size;
@@ -122,6 +128,7 @@ private:
                               bool verify = true) const;
 
     template <typename T>
+        requires IsInVariant<T, decltype(RR::data)>
     std::vector<T> rrset_to_data(const std::vector<RR> &rrset) const {
         std::vector<T> result;
         result.reserve(rrset.size());
@@ -130,6 +137,7 @@ private:
     }
 
     template <typename T>
+        requires IsInVariant<T, decltype(RR::data)>
     std::vector<T> rrset_to_data(std::vector<RR> &&rrset) const {
         std::vector<T> result;
         result.reserve(rrset.size());

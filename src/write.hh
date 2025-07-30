@@ -12,8 +12,7 @@ concept CastableEnum = std::is_scoped_enum_v<T> && std::same_as<std::underlying_
 
 inline void write_u8(std::vector<uint8_t> &buffer, uint16_t value) { buffer.push_back(value); }
 
-template <CastableEnum<uint8_t> T>
-void write_u8(std::vector<uint8_t> &buffer, T value) {
+void write_u8(std::vector<uint8_t> &buffer, CastableEnum<uint8_t> auto value) {
     write_u8(buffer, std::to_underlying(value));
 }
 
@@ -22,8 +21,7 @@ inline void write_u16(std::vector<uint8_t> &buffer, uint16_t value) {
     buffer.push_back(value);
 }
 
-template <CastableEnum<uint16_t> T>
-void write_u16(std::vector<uint8_t> &buffer, T value) {
+void write_u16(std::vector<uint8_t> &buffer, CastableEnum<uint16_t> auto value) {
     write_u16(buffer, std::to_underlying(value));
 }
 
@@ -34,8 +32,7 @@ inline void write_u32(std::vector<uint8_t> &buffer, uint32_t value) {
     buffer.push_back(value);
 }
 
-template <std::input_iterator T>
-void write_bytes(std::vector<uint8_t> &buffer, T start, size_t length) {
+void write_bytes(std::vector<uint8_t> &buffer, std::input_iterator auto start, size_t length) {
     buffer.insert(buffer.end(), start, start + length);
 }
 

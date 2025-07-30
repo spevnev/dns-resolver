@@ -59,7 +59,7 @@ static void write(T src, uint8_t *&dest, size_t &dest_size) {
 }
 
 template <typename T>
-    requires requires { std::is_trivially_copyable_v<T>; }
+    requires std::is_trivially_copyable_v<T>
 static T read(const uint8_t *&src, size_t &src_size) {
     assert(sizeof(T) <= src_size);
     T dest;
