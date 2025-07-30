@@ -421,9 +421,52 @@ uint16_t compute_key_tag(const std::vector<uint8_t> &data) {
     return ac & 0xFFFF;
 }
 
-bool verify_rrsig(const std::vector<RR> &rrset, const std::vector<DNSKEY> &dnskeys, const std::string &zone_domain,
-                  const std::vector<RRSIG> &rrsigs) {
-    if (rrset.empty() || dnskeys.empty() || rrsigs.empty()) return false;
+std::vector<DNSKEY> verify_dnskeys(const std::vector<RR> &dnskey_rrset, const std::vector<DS> &dss) {
+    if (dnskey_rrset.empty() || dss.empty()) return {};
+
+    EVP_MD_CTX_unique_ptr ctx{EVP_MD_CTX_new()};
+    if (ctx == nullptr) return {};
+
+    std::vector<uint8_t> canonical_domain, digest;
+    std::vector<DNSKEY> verified_dnskeys;
+    for (const auto &ds : dss) {
+        try {
+            auto digest_algorithm = get_ds_digest_algorithm(ds.digest_algorithm);
+            auto digest_size = EVP_MD_get_size(digest_algorithm);
+            if (digest_size <= 0) continue;
+
+            for (const auto &dnskey_rr : dnskey_rrset) {
+                const auto &dnskey = std::get<DNSKEY>(dnskey_rr.data);
+                if (dnskey.key_tag != ds.key_tag) continue;
+
+                canonical_domain.clear();
+                write_domain(canonical_domain, dnskey_rr.domain);
+
+                digest.resize(digest_size);
+                if (EVP_DigestInit(ctx.get(), digest_algorithm) != 1 ||                                    //
+                    EVP_DigestUpdate(ctx.get(), canonical_domain.data(), canonical_domain.size()) != 1 ||  //
+                    EVP_DigestUpdate(ctx.get(), dnskey.data.data(), dnskey.data.size()) != 1 ||            //
+                    EVP_DigestFinal(ctx.get(), digest.data(), nullptr) != 1) {
+                    continue;
+                }
+
+                if (digest == ds.digest) {
+                    verified_dnskeys.push_back(dnskey);
+                    break;
+                }
+            }
+        } catch (...) {
+            // Try different DS.
+            continue;
+        }
+    }
+    return verified_dnskeys;
+}
+
+bool verify_rrsig(const std::vector<RR> &rrset, const std::vector<RRSIG> &rrsigs, const std::vector<DNSKEY> &dnskeys,
+                  const std::string &zone_domain) {
+    if (rrset.empty()) return true;
+    if (rrsigs.empty() || dnskeys.empty()) return false;
 
     auto rrs_with_data = add_data_to_rrset(rrset);
     std::ranges::sort(rrs_with_data, [](const auto &a, const auto &b) {
@@ -482,51 +525,6 @@ bool verify_rrsig(const std::vector<RR> &rrset, const std::vector<DNSKEY> &dnske
         }
     }
     return false;
-}
-
-bool verify_dnskeys(const std::vector<RR> &dnskey_rrset, const std::vector<DS> &dss, const std::string &zone_domain,
-                    const std::vector<RRSIG> &rrsigs) {
-    if (dnskey_rrset.empty() || dss.empty() || rrsigs.empty()) return false;
-
-    EVP_MD_CTX_unique_ptr ctx{EVP_MD_CTX_new()};
-    if (ctx == nullptr) return false;
-
-    std::vector<uint8_t> canonical_domain, digest;
-    std::vector<DNSKEY> verified_dnskeys;
-    for (const auto &ds : dss) {
-        try {
-            auto digest_algorithm = get_ds_digest_algorithm(ds.digest_algorithm);
-            auto digest_size = EVP_MD_get_size(digest_algorithm);
-            if (digest_size <= 0) continue;
-
-            for (const auto &dnskey_rr : dnskey_rrset) {
-                const auto &dnskey = std::get<DNSKEY>(dnskey_rr.data);
-                if (dnskey.key_tag != ds.key_tag) continue;
-
-                canonical_domain.clear();
-                write_domain(canonical_domain, dnskey_rr.domain);
-
-                digest.resize(digest_size);
-                if (EVP_DigestInit(ctx.get(), digest_algorithm) != 1 ||                                    //
-                    EVP_DigestUpdate(ctx.get(), canonical_domain.data(), canonical_domain.size()) != 1 ||  //
-                    EVP_DigestUpdate(ctx.get(), dnskey.data.data(), dnskey.data.size()) != 1 ||            //
-                    EVP_DigestFinal(ctx.get(), digest.data(), nullptr) != 1) {
-                    continue;
-                }
-
-                if (digest == ds.digest) {
-                    verified_dnskeys.push_back(dnskey);
-                    break;
-                }
-            }
-        } catch (...) {
-            // Try different DS.
-            continue;
-        }
-    }
-    if (verified_dnskeys.empty()) return false;
-
-    return verify_rrsig(dnskey_rrset, verified_dnskeys, zone_domain, rrsigs);
 }
 
 bool nsec_covers_domain(const RR &nsec_rr, const std::string &domain) {

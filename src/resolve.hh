@@ -115,9 +115,11 @@ private:
     void zone_disable_dnssec(Zone &zone) const;
     void zone_disable_cookies(Zone &zone) const;
 
-    std::vector<RR> filter_rrset(std::vector<RR> &rrset, RRType rr_type) const;
-    std::vector<RR> filter_rrset(std::vector<RR> &rrset, RRType rr_type, const std::string &domain) const;
-    std::vector<RRSIG> get_rrsigs(std::vector<RR> &rrset, const std::string &domain, RRType rr_type_covered) const;
+    bool verify_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &rrsigs, RRType rr_type,
+                      const Zone &zone) const;
+    std::vector<RR> get_rrset(std::vector<RR> &rrset, RRType rr_type, const Zone &zone, bool verify = true) const;
+    std::vector<RR> get_rrset(std::vector<RR> &rrset, RRType rr_type, const std::string &domain, const Zone &zone,
+                              bool verify = true) const;
 
     template <typename T>
     std::vector<T> rrset_to_data(const std::vector<RR> &rrset) const {

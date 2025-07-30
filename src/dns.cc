@@ -128,17 +128,15 @@ private:
         return std::make_unique<ResponseReader>(buffer, offset);
     }
 
-    template <typename T>
-    void read(size_t length, T &container) {
+    void read(size_t length, auto &container) {
         if (offset + length > buffer.size()) throw std::runtime_error("Response is too short");
         container.assign(buffer.cbegin() + offset, buffer.cbegin() + offset + length);
         offset += length;
     }
 
     template <typename T>
-    T read()
         requires requires { std::is_trivially_copyable_v<T>; }
-    {
+    T read() {
         T value;
         if (offset + sizeof(value) > buffer.size()) throw std::runtime_error("Response is too short");
         std::memcpy(&value, buffer.data() + offset, sizeof(value));
