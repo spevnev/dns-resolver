@@ -2,7 +2,7 @@
 #include "config.hh"
 #include "resolve.hh"
 
-int main(void) {
+int main() {
     /// mult.txt TXT a b c d e
     Resolver resolver{TEST_RESOLVER_CONFIG};
     auto opt_rrset = resolver.resolve("mult.txt." TEST_DOMAIN, RRType::TXT);

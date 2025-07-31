@@ -1,11 +1,14 @@
 #include "encode.hh"
+#include <cassert>
 #include <cstdint>
 #include <string>
 #include <vector>
 
-static const char *BASE64_TABLE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-static const char *BASE32_TABLE = "0123456789abcdefghijklmnopqrstuv";
-static const char *HEX_TABLE = "0123456789ABCDEF";
+namespace {
+const char *BASE64_TABLE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const char *BASE32_TABLE = "0123456789abcdefghijklmnopqrstuv";
+const char *HEX_TABLE = "0123456789ABCDEF";
+}  // namespace
 
 std::string base64_encode(const std::vector<uint8_t> &src) {
     std::string output;
@@ -88,6 +91,7 @@ std::string base32_encode(const std::vector<uint8_t> &src) {
                 output.push_back(BASE32_TABLE[(it[3] & 0b1111100) >> 2]);
                 output.push_back(BASE32_TABLE[((it[3] & 0b11) << 3)]);
                 break;
+            default: static_assert("Unreachable");
         }
         output.push_back('=');
     }

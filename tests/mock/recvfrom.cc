@@ -12,14 +12,13 @@
 #include "dns.hh"
 #include "mock_config.hh"
 
+namespace {
 class buffer_overflow_error : std::runtime_error {
 public:
     buffer_overflow_error() : std::runtime_error("Buffer is too small") {}
 };
 
-extern std::vector<uint8_t> request_buffer;
-
-static size_t get_domain_length(const uint8_t *buffer) {
+size_t get_domain_length(const uint8_t *buffer) {
     size_t length = 1;
 
     while (*buffer != 0) {
@@ -33,7 +32,7 @@ static size_t get_domain_length(const uint8_t *buffer) {
     return length;
 }
 
-static void copy(const uint8_t *&src, size_t &src_size, uint8_t *&dest, size_t &dest_size, size_t length) {
+void copy(const uint8_t *&src, size_t &src_size, uint8_t *&dest, size_t &dest_size, size_t length) {
     assert(length <= src_size);
     if (length > dest_size) throw buffer_overflow_error();
     std::memcpy(dest, src, length);
@@ -43,7 +42,7 @@ static void copy(const uint8_t *&src, size_t &src_size, uint8_t *&dest, size_t &
     dest_size -= length;
 }
 
-static void copy(const std::vector<uint8_t> &src, uint8_t *&dest, size_t &dest_size) {
+void copy(const std::vector<uint8_t> &src, uint8_t *&dest, size_t &dest_size) {
     if (src.size() > dest_size) throw buffer_overflow_error();
     std::memcpy(dest, src.data(), src.size());
     dest += src.size();
@@ -51,7 +50,7 @@ static void copy(const std::vector<uint8_t> &src, uint8_t *&dest, size_t &dest_s
 }
 
 template <typename T>
-static void write(T src, uint8_t *&dest, size_t &dest_size) {
+void write(T src, uint8_t *&dest, size_t &dest_size) {
     if (sizeof(T) > dest_size) throw buffer_overflow_error();
     std::memcpy(dest, &src, sizeof(T));
     dest += sizeof(T);
@@ -60,7 +59,7 @@ static void write(T src, uint8_t *&dest, size_t &dest_size) {
 
 template <typename T>
     requires std::is_trivially_copyable_v<T>
-static T read(const uint8_t *&src, size_t &src_size) {
+T read(const uint8_t *&src, size_t &src_size) {
     assert(sizeof(T) <= src_size);
     T dest;
     std::memcpy(&dest, src, sizeof(T));
@@ -69,21 +68,22 @@ static T read(const uint8_t *&src, size_t &src_size) {
     return dest;
 }
 
-static void skip(const uint8_t *&src, size_t &src_size, size_t length) {
+void skip(const uint8_t *&src, size_t &src_size, size_t length) {
     assert(length <= src_size);
     src += length;
     src_size -= length;
 }
+}  // namespace
 
 extern "C" {
-ssize_t recvfrom(int _fd, void *buffer, size_t buffer_size, int _flags, struct sockaddr *addr, socklen_t *addr_len) {
+ssize_t recvfrom(int _fd, void *buf, size_t n, int _flags, struct sockaddr *addr, socklen_t *addr_len) {
     (void) _fd;
     (void) _flags;
 
     const uint8_t *src = request_buffer.data();
     auto src_size = request_buffer.size();
-    auto dest = reinterpret_cast<uint8_t *>(buffer);
-    auto dest_size = buffer_size;
+    auto *dest = reinterpret_cast<uint8_t *>(buf);
+    auto dest_size = n;
 
     struct sockaddr_in ip_addr;
     ip_addr.sin_family = AF_INET;
@@ -94,7 +94,7 @@ ssize_t recvfrom(int _fd, void *buffer, size_t buffer_size, int _flags, struct s
 
     assert(addr_len != nullptr && addr != nullptr);
     assert(*addr_len >= sizeof(ip_addr));
-    auto ip_addr_out = reinterpret_cast<struct sockaddr_in *>(addr);
+    auto *ip_addr_out = reinterpret_cast<struct sockaddr_in *>(addr);
     *ip_addr_out = ip_addr;
     *addr_len = sizeof(ip_addr);
 
@@ -106,7 +106,6 @@ ssize_t recvfrom(int _fd, void *buffer, size_t buffer_size, int _flags, struct s
             copy(src, src_size, dest, dest_size, 2);
         }
 
-        // auto request_flags = ntohs(read<uint16_t>(src, src_size));
         skip(src, src_size, 2);
         uint16_t flags
             = (static_cast<uint16_t>(mock_response.opcode) << 11) | (std::to_underlying(mock_response.rcode) & 0b1111);
@@ -155,10 +154,10 @@ ssize_t recvfrom(int _fd, void *buffer, size_t buffer_size, int _flags, struct s
                 if (ntohs(opt_length_net) > 8) has_server_cookie = true;
             }
 
-            auto extended_rcode_ptr = dest + 5;
-            auto opt_length_ptr = dest + 9;
-            auto cookies_length_ptr = dest + 13;
-            auto cookies_client_ptr = dest + 15;
+            auto *extended_rcode_ptr = dest + 5;
+            auto *opt_length_ptr = dest + 9;
+            auto *cookies_length_ptr = dest + 13;
+            auto *cookies_client_ptr = dest + 15;
             copy(src, src_size, dest, dest_size, src_size);
 
             *extended_rcode_ptr = std::to_underlying(mock_response.rcode) >> 4;
@@ -185,7 +184,6 @@ ssize_t recvfrom(int _fd, void *buffer, size_t buffer_size, int _flags, struct s
         copy(mock_response.additional, dest, dest_size);
     } catch (const buffer_overflow_error &) {
     }
-
-    return buffer_size - dest_size;
+    return n - dest_size;
 }
 }

@@ -11,7 +11,7 @@ MockResponse mock_response = {
     .answers_count = 1,
 };
 
-int main(void) {
+int main() {
     Resolver resolver{TEST_RESOLVER_CONFIG};
     auto opt_rrset = resolver.resolve(TEST_DOMAIN, RRType::A);
     ASSERT(!opt_rrset.has_value());

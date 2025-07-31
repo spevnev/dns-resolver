@@ -9,7 +9,7 @@ MockResponse mock_response = {
     .answers_count = 1,
 };
 
-int main(void) {
+int main() {
     auto unknown_rr_type = static_cast<RRType>(0xFF00);
 
     Resolver resolver{TEST_RESOLVER_CONFIG};

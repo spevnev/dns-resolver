@@ -3,7 +3,7 @@
 #include "config.hh"
 #include "resolve.hh"
 
-int main(void) {
+int main() {
     // clang-format off
     /// dnskey DNSKEY 257 3 5 AQOeX7+baTmvpVHb2CcLnL1dMRWbuscRvHXlLnXwDzvqp4tZVKp1sZMepFb8MvxhhW3y/0QZsyCjczGJ1qk8vJe52iOhInKROVLRwxGpMfzPRLMlGybr51bOV/1se0ODacj3DomyB4QB5gKTYot/K9alk5/j8vfd4jWCWD+E1Sze0Q==
     // clang-format on

@@ -3,12 +3,6 @@
 #include "mock_config.hh"
 #include "resolve.hh"
 
-static const char *DOMAIN
-    = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa."
-      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa."
-      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa."
-      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
 MockResponse mock_response = {
     .answers
     = {0x3f, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61,
@@ -61,7 +55,13 @@ MockResponse mock_response = {
     .answers_count = 3,
 };
 
-int main(void) {
+int main() {
+    const char *DOMAIN
+        = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa."
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa."
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa."
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
     auto without_edns = TEST_RESOLVER_CONFIG;
     without_edns.edns = FeatureState::Disable;
 
@@ -79,7 +79,9 @@ int main(void) {
     auto &rrset = opt_rrset.value();
     ASSERT(rrset.size() == 3);
 
-    bool found1 = false, found2 = false, found3 = false;
+    bool found1 = false;
+    bool found2 = false;
+    bool found3 = false;
     for (auto &rr : rrset) {
         ASSERT(rr.type == RRType::A);
         auto address = std::get<A>(rr.data).address;

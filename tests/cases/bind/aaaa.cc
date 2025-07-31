@@ -2,7 +2,7 @@
 #include "config.hh"
 #include "resolve.hh"
 
-int main(void) {
+int main() {
     /// aaaa AAAA 1:2:3:4::
     Resolver resolver{TEST_RESOLVER_CONFIG};
     auto opt_rrset = resolver.resolve("aaaa." TEST_DOMAIN, RRType::AAAA);

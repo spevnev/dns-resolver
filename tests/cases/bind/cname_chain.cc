@@ -2,7 +2,7 @@
 #include "config.hh"
 #include "resolve.hh"
 
-int main(void) {
+int main() {
     /// chain.cname CNAME chain2.cname
     /// chain2.cname CNAME chain1.cname
     /// chain1.cname CNAME result.chain.cname

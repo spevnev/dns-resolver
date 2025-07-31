@@ -4,7 +4,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <cstdlib>
-#include <print>
+#include <print>  // IWYU pragma: keep
 
 #define ASSERT(condition)                                                                          \
     do {                                                                                           \

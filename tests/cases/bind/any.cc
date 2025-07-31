@@ -2,7 +2,7 @@
 #include "config.hh"
 #include "resolve.hh"
 
-int main(void) {
+int main() {
     /// any A 1.1.1.1
     /// any A 2.2.2.2
     /// any TXT result
@@ -13,7 +13,9 @@ int main(void) {
     auto &rrset = opt_rrset.value();
     ASSERT(rrset.size() == 3);
 
-    bool found1 = false, found2 = false, found3 = false;
+    bool found1 = false;
+    bool found2 = false;
+    bool found3 = false;
     for (auto &rr : rrset) {
         if (rr.type == RRType::A) {
             auto address = std::get<A>(rr.data).address;

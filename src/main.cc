@@ -8,11 +8,13 @@
 #define CXXOPTS_NO_REGEX
 #include <cxxopts.hpp>
 
+// NOLINTNEXTLINE
 std::istream &operator>>(std::istream &is, RRType &out) {
     std::string str;
     is >> str;
     for (auto &ch : str) ch = std::toupper(ch);
 
+    // NOLINTBEGIN
     if (str == "A") out = RRType::A;
     else if (str == "NS") out = RRType::NS;
     else if (str == "CNAME") out = RRType::CNAME;
@@ -26,19 +28,26 @@ std::istream &operator>>(std::istream &is, RRType &out) {
     else if (str == "NSEC3") out = RRType::NSEC3;
     else if (str == "ANY") out = RRType::ANY;
     else is.setstate(std::ios::failbit);
+    // NOLINTEND
 
     return is;
 }
 
+// NOLINTNEXTLINE
 std::istream &operator>>(std::istream &is, FeatureState &out) {
     std::string str;
     is >> str;
     for (auto &ch : str) ch = std::tolower(ch);
 
-    if (str == "on" || str == "true" || str == "enable") out = FeatureState::Enable;
-    else if (str == "off" || str == "false" || str == "disable") out = FeatureState::Disable;
-    else if (str == "require") out = FeatureState::Require;
-    else is.setstate(std::ios::failbit);
+    if (str == "on" || str == "true" || str == "enable") {
+        out = FeatureState::Enable;
+    } else if (str == "off" || str == "false" || str == "disable") {
+        out = FeatureState::Disable;
+    } else if (str == "require") {
+        out = FeatureState::Require;
+    } else {
+        is.setstate(std::ios::failbit);
+    }
 
     return is;
 }
@@ -66,7 +75,7 @@ int main(int argc, char **argv) {
         options.parse_positional({"domain"});
 
         auto result = options.parse(argc, argv);
-        if (result.count("help")) {
+        if (result.contains("help")) {
             std::println("{}", options.help());
             return EXIT_SUCCESS;
         }

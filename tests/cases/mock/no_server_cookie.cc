@@ -10,7 +10,7 @@ MockResponse mock_response = {
     .answers_count = 1,
 };
 
-int main(void) {
+int main() {
     auto config = TEST_RESOLVER_CONFIG;
     config.cookies = FeatureState::Require;
 

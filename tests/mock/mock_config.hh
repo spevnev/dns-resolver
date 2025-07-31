@@ -23,3 +23,5 @@ struct MockResponse {
 
 // Declared in each test case, defines the behavior of mocked functions.
 extern MockResponse mock_response;
+
+extern std::vector<uint8_t> request_buffer;

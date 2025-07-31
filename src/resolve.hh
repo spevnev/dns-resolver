@@ -6,10 +6,10 @@
 #include <functional>
 #include <memory>
 #include <optional>
-#include <queue>
 #include <random>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include "dns.hh"
 
@@ -21,20 +21,19 @@ inline constexpr bool IsInVariant<T, std::variant<Ts...>> = (std::same_as<T, Ts>
 
 struct Nameserver {
     std::variant<in_addr_t, std::string> address;
-    uint16_t udp_payload_size;
-    bool sent_bad_cookie;
-    DNSCookies cookies;
+    std::optional<uint16_t> udp_payload_size{std::nullopt};
+    bool sent_bad_cookie{false};
+    DNSCookies cookies{};
 
-    Nameserver(in_addr_t address) : address(address), udp_payload_size(0), sent_bad_cookie(false), cookies() {}
-    Nameserver(const std::string &address) : address(address), udp_payload_size(0), sent_bad_cookie(false), cookies() {}
-    Nameserver(std::string &&address)
-        : address(std::move(address)), udp_payload_size(0), sent_bad_cookie(false), cookies() {}
+    Nameserver(in_addr_t address) : address(address) {}
+    Nameserver(const std::string &address) : address(address) {}
+    Nameserver(std::string &&address) : address(std::move(address)) {}
 };
 
 struct Zone {
     // Do not ask the zone whose nameserver is being resolved.
-    bool is_being_resolved;
-    bool no_secure_delegation;
+    bool is_being_resolved{false};
+    bool no_secure_delegation{false};
     std::string domain;
     bool enable_edns;
     bool enable_dnssec;
@@ -43,16 +42,11 @@ struct Zone {
     std::vector<DS> dss;
     std::vector<DNSKEY> dnskeys;
 
-    Zone(const std::string &domain, bool enable_edns, bool enable_dnssec, bool enable_cookies)
-        : is_being_resolved(false),
-          no_secure_delegation(false),
-          domain(domain),
+    Zone(std::string domain, bool enable_edns, bool enable_dnssec, bool enable_cookies)
+        : domain(std::move(domain)),
           enable_edns(enable_edns),
           enable_dnssec(enable_dnssec),
-          enable_cookies(enable_cookies),
-          nameservers(),
-          dss(),
-          dnskeys() {}
+          enable_cookies(enable_cookies) {}
 
     void add_nameserver(in_addr_t address) { nameservers.push_back(std::make_shared<Nameserver>(address)); }
     void add_nameserver(const std::string &domain) { nameservers.push_back(std::make_shared<Nameserver>(domain)); }
@@ -104,19 +98,14 @@ private:
     std::chrono::time_point<std::chrono::steady_clock> timeout_instant;
     std::shared_ptr<Zone> specified_zone, resolve_config_zone, root_zone;
 
-    std::string fully_qualify_domain(const std::string &domain) const;
-    int count_matching_labels(const std::string &a, const std::string &b) const;
-
     void set_socket_timeout(uint64_t timeout) const;
     void update_timeout();
 
     void udp_send(const std::vector<uint8_t> &buffer, struct sockaddr_in address);
     void udp_receive(std::vector<uint8_t> &buffer, struct sockaddr_in address);
 
-    void load_resolve_config(Zone &zone) const;
     std::shared_ptr<Zone> new_zone(const std::string &domain) const;
     std::shared_ptr<Zone> find_zone(const std::string &domain) const;
-    std::shared_ptr<Zone> get_safe_zone(std::queue<std::shared_ptr<Zone>> &safe_zones) const;
     void zone_disable_edns(Zone &zone) const;
     void zone_disable_dnssec(Zone &zone) const;
     void zone_disable_cookies(Zone &zone) const;
@@ -132,7 +121,7 @@ private:
     std::vector<T> rrset_to_data(const std::vector<RR> &rrset) const {
         std::vector<T> result;
         result.reserve(rrset.size());
-        for (auto &rr : rrset) result.push_back(std::get<T>(rr.data));
+        for (const auto &rr : rrset) result.push_back(std::get<T>(rr.data));
         return result;
     }
 

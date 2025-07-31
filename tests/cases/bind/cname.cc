@@ -2,7 +2,7 @@
 #include "config.hh"
 #include "resolve.hh"
 
-int main(void) {
+int main() {
     /// cname CNAME result.cname
     Resolver resolver{TEST_RESOLVER_CONFIG};
     auto opt_rrset = resolver.resolve("cname." TEST_DOMAIN, RRType::CNAME);

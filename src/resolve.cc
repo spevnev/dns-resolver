@@ -25,17 +25,18 @@
 #include "dns.hh"
 #include "dnssec.hh"
 
-static const constexpr uint64_t MIN_UDP_TIMEOUT_MS = 300;
-static const constexpr int MAX_QUERY_DEPTH = 20;
+namespace {
+const constexpr uint64_t MIN_UDP_TIMEOUT_MS = 300;
+const constexpr int MAX_QUERY_DEPTH = 20;
 
 // https://www.iana.org/domains/root/servers
-static const constexpr char *ROOT_IP[] = {
+const char *const ROOT_IP[] = {
     "198.41.0.4",    "170.247.170.2", "192.33.4.12",   "199.7.91.13",  "192.203.230.10", "192.5.5.241",  "192.112.36.4",
     "198.97.190.53", "192.36.148.17", "192.58.128.30", "193.0.14.129", "199.7.83.42",    "202.12.27.33",
 };
 
 // https://data.iana.org/root-anchors/root-anchors.xml
-static const DS ROOT_DS[]
+const DS ROOT_DS[]
     = {{
            .key_tag = 20326,
            .signing_algorithm = SigningAlgorithm::RSASHA256,
@@ -58,6 +59,87 @@ public:
     bad_cookie_error() : std::runtime_error("Bad server cookie") {}
 };
 
+std::string fully_qualify_domain(const std::string &domain) {
+    std::string fqd;
+    fqd.reserve(domain.size() + 1);
+
+    size_t label_index = 0;
+    for (size_t i = 0; i < domain.size(); i++) {
+        if (domain[i] == '.') {
+            if (i == 0 && domain != ".") throw std::runtime_error("Domain starts with a dot");
+            if (i > 0 && domain[i - 1] == '.') throw std::runtime_error("Domain has an empty label");
+            if (i - label_index > MAX_LABEL_LENGTH) throw std::runtime_error("Label is too long");
+            label_index = i + 1;
+        }
+
+        fqd.push_back(tolower(domain[i]));
+    }
+    if (!domain.ends_with('.')) fqd.push_back('.');
+
+    if (fqd.size() > MAX_DOMAIN_LENGTH) throw std::runtime_error("Domain is too long");
+    return fqd;
+}
+
+int count_matching_labels(const std::string &a, const std::string &b) {
+    assert(!a.empty() && !b.empty());
+
+    int count = 0;
+    auto a_it = a.crbegin() + 1;
+    auto b_it = b.crbegin() + 1;
+    while (a_it != a.crend() && b_it != b.crend()) {
+        if (*a_it != *b_it) return count;
+        if (*a_it == '.') count++;
+        ++a_it, ++b_it;
+    }
+    if ((a_it == a.crend() || *a_it == '.') && (b_it == b.crend() || *b_it == '.')) count++;
+    return count;
+}
+
+void load_resolve_config(Zone &zone) {
+    std::ifstream is{"/etc/resolv.conf"};
+    in_addr_t ip_address;
+    std::string line;
+    while (std::getline(is, line)) {
+        auto start_idx = line.find_first_not_of(" \t");
+        if (start_idx == std::string::npos) continue;
+
+        if (line.compare(start_idx, 10, "nameserver") != 0) continue;
+        start_idx += 10;
+
+        auto address_start_idx = line.find_first_not_of(" \t", start_idx);
+        if (address_start_idx == std::string::npos) continue;
+
+        auto address_end_idx = line.find_last_not_of(" \t");
+        if (address_end_idx == std::string::npos) continue;
+
+        auto *ip_str = line.data() + address_start_idx;
+        line[address_end_idx + 1] = '\0';
+
+        if (inet_pton(AF_INET, ip_str, &ip_address) == 1) zone.add_nameserver(ip_address);
+    }
+
+    // If no nameserver entries are present, the default is to use the local nameserver.
+    if (zone.nameservers.empty()) {
+        auto result = inet_pton(AF_INET, "127.0.0.1", &ip_address);
+        assert(result == 1);
+        zone.add_nameserver(ip_address);
+    }
+}
+
+std::shared_ptr<Zone> get_safe_zone(std::queue<std::shared_ptr<Zone>> &safe_zones) {
+    while (!safe_zones.empty()) {
+        auto zone = std::move(safe_zones.front());
+        safe_zones.pop();
+        if (zone != nullptr && !zone->is_being_resolved) return zone;
+    }
+    return nullptr;
+}
+
+bool address_equals(struct sockaddr_in a, struct sockaddr_in b) {
+    return a.sin_port == b.sin_port && a.sin_addr.s_addr == b.sin_addr.s_addr;
+}
+}  // namespace
+
 Resolver::Resolver(ResolverConfig config)
     : timeout_duration(config.timeout_ms),
       udp_timeout_ms(std::max(config.timeout_ms / 5, MIN_UDP_TIMEOUT_MS)),
@@ -77,12 +159,13 @@ Resolver::Resolver(ResolverConfig config)
     }
     if (dnssec == FeatureState::Require || cookies == FeatureState::Require) edns = FeatureState::Require;
 
-    if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) throw std::runtime_error("Failed to create UDP socket");
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd == -1) throw std::runtime_error("Failed to create UDP socket");
 
     in_addr_t ip_address;
     if (config.use_root_nameservers) {
         root_zone = new_zone(".");
-        for (auto ip : ROOT_IP) {
+        for (const auto *ip : ROOT_IP) {
             if (inet_pton(AF_INET, ip, &ip_address) != 1) throw std::runtime_error("Failed to add root nameservers");
             root_zone->add_nameserver(ip_address);
         }
@@ -131,41 +214,6 @@ std::optional<std::vector<RR>> Resolver::resolve(const std::string &domain, RRTy
     }
 }
 
-std::string Resolver::fully_qualify_domain(const std::string &domain) const {
-    std::string fqd;
-    fqd.reserve(domain.size() + 1);
-
-    size_t label_index = 0;
-    for (size_t i = 0; i < domain.size(); i++) {
-        if (domain[i] == '.') {
-            if (i == 0 && domain != ".") throw std::runtime_error("Domain starts with a dot");
-            if (i > 0 && domain[i - 1] == '.') throw std::runtime_error("Domain has an empty label");
-            if (i - label_index > MAX_LABEL_LENGTH) throw std::runtime_error("Label is too long");
-            label_index = i + 1;
-        }
-
-        fqd.push_back(tolower(domain[i]));
-    }
-    if (!domain.ends_with('.')) fqd.push_back('.');
-
-    if (fqd.size() > MAX_DOMAIN_LENGTH) throw std::runtime_error("Domain is too long");
-    return fqd;
-}
-
-int Resolver::count_matching_labels(const std::string &a, const std::string &b) const {
-    assert(!a.empty() && !b.empty());
-
-    int count = 0;
-    auto a_it = a.crbegin() + 1, b_it = b.crbegin() + 1;
-    while (a_it != a.crend() && b_it != b.crend()) {
-        if (*a_it != *b_it) return count;
-        if (*a_it == '.') count++;
-        ++a_it, ++b_it;
-    }
-    if ((a_it == a.crend() || *a_it == '.') && (b_it == b.crend() || *b_it == '.')) count++;
-    return count;
-}
-
 void Resolver::set_socket_timeout(uint64_t timeout_ms) const {
     struct timeval tv;
     tv.tv_sec = timeout_ms / 1000;
@@ -180,29 +228,21 @@ void Resolver::set_socket_timeout(uint64_t timeout_ms) const {
 void Resolver::update_timeout() {
     auto time_left = timeout_instant - std::chrono::steady_clock::now();
     auto time_left_ms = std::chrono::duration_cast<std::chrono::duration<uint64_t, std::milli>>(time_left).count();
-
-    if (time_left_ms <= 0) {
-        throw std::runtime_error{"Query timed out"};
-    } else if (time_left_ms <= udp_timeout_ms) {
-        set_socket_timeout(time_left_ms);
-    }
+    if (time_left_ms <= 0) throw std::runtime_error{"Query timed out"};
+    if (time_left_ms <= udp_timeout_ms) set_socket_timeout(time_left_ms);
 }
 
 void Resolver::udp_send(const std::vector<uint8_t> &buffer, struct sockaddr_in address) {
-    auto socket_address = reinterpret_cast<struct sockaddr *>(&address);
+    auto *socket_address = reinterpret_cast<struct sockaddr *>(&address);
     auto result = sendto(fd, buffer.data(), buffer.size(), 0, socket_address, sizeof(address));
     update_timeout();
     if (result == -1 && errno == EAGAIN) throw std::runtime_error("Request timed out");
     if (result != static_cast<ssize_t>(buffer.size())) throw std::runtime_error("Failed to send the request");
 }
 
-static inline constexpr bool address_equals(struct sockaddr_in a, struct sockaddr_in b) {
-    return a.sin_port == b.sin_port && a.sin_addr.s_addr == b.sin_addr.s_addr;
-}
-
 void Resolver::udp_receive(std::vector<uint8_t> &buffer, struct sockaddr_in request_address) {
     struct sockaddr_in address;
-    auto socket_address = reinterpret_cast<struct sockaddr *>(&address);
+    auto *socket_address = reinterpret_cast<struct sockaddr *>(&address);
     socklen_t address_length;
     ssize_t result;
     // Read responses until we find the one from the same address and port as in request.
@@ -211,45 +251,11 @@ void Resolver::udp_receive(std::vector<uint8_t> &buffer, struct sockaddr_in requ
         result = recvfrom(fd, buffer.data(), buffer.size(), 0, socket_address, &address_length);
         update_timeout();
         if (result == -1) {
-            if (errno == EAGAIN) {
-                throw std::runtime_error("Response timed out");
-            } else {
-                throw std::runtime_error("Failed to receive the response");
-            }
+            if (errno == EAGAIN) throw std::runtime_error("Response timed out");
+            throw std::runtime_error("Failed to receive the response");
         }
     } while (address_length != sizeof(address) || !address_equals(address, request_address));
     buffer.resize(result);
-}
-
-void Resolver::load_resolve_config(Zone &zone) const {
-    std::ifstream is{"/etc/resolv.conf"};
-    in_addr_t ip_address;
-    std::string line;
-    while (std::getline(is, line)) {
-        auto start_idx = line.find_first_not_of(" \t");
-        if (start_idx == std::string::npos) continue;
-
-        if (line.compare(start_idx, 10, "nameserver") != 0) continue;
-        start_idx += 10;
-
-        auto address_start_idx = line.find_first_not_of(" \t", start_idx);
-        if (address_start_idx == std::string::npos) continue;
-
-        auto address_end_idx = line.find_last_not_of(" \t");
-        if (address_end_idx == std::string::npos) continue;
-
-        auto ip_str = line.data() + address_start_idx;
-        line[address_end_idx + 1] = '\0';
-
-        if (inet_pton(AF_INET, ip_str, &ip_address) == 1) zone.add_nameserver(ip_address);
-    }
-
-    // If no nameserver entries are present, the default is to use the local nameserver.
-    if (zone.nameservers.empty()) {
-        auto result = inet_pton(AF_INET, "127.0.0.1", &ip_address);
-        assert(result == 1);
-        zone.add_nameserver(ip_address);
-    }
 }
 
 std::shared_ptr<Zone> Resolver::new_zone(const std::string &domain) const {
@@ -270,15 +276,6 @@ std::shared_ptr<Zone> Resolver::find_zone(const std::string &domain) const {
         if (next_label_index == current.size() - 1) return nullptr;
         current.remove_prefix(next_label_index + 1);
     }
-}
-
-std::shared_ptr<Zone> Resolver::get_safe_zone(std::queue<std::shared_ptr<Zone>> &safe_zones) const {
-    while (!safe_zones.empty()) {
-        auto zone = std::move(safe_zones.front());
-        safe_zones.pop();
-        if (zone != nullptr && !zone->is_being_resolved) return zone;
-    }
-    return nullptr;
 }
 
 void Resolver::zone_disable_edns(Zone &zone) const {
@@ -317,7 +314,8 @@ bool Resolver::verify_rrset(const std::vector<RR> &rrset, const std::vector<RRSI
 }
 
 std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, const Zone &zone, bool verify) const {
-    std::vector<RR> result, current_rrset;
+    std::vector<RR> result;
+    std::vector<RR> current_rrset;
     std::vector<RRSIG> current_rrsigs;
     std::ranges::sort(rrset, {}, &RR::domain);
     for (auto it = rrset.begin(); it != rrset.end(); ++it) {
@@ -403,8 +401,11 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
             if (opt_dnskey_rrset.has_value() && !opt_dnskey_rrset->empty()) {
                 zone->dnskeys = rrset_to_data<DNSKEY>(std::move(opt_dnskey_rrset.value()));
             } else {
-                if (zone->no_secure_delegation) zone->enable_dnssec = false;
-                else zone_disable_dnssec(*zone);
+                if (zone->no_secure_delegation) {
+                    zone->enable_dnssec = false;
+                } else {
+                    zone_disable_dnssec(*zone);
+                }
             }
         }
 
@@ -434,14 +435,13 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
 
                 if (verbose) {
                     char ip_addr_buf[INET_ADDRSTRLEN];
-                    auto address_str = inet_ntop(AF_INET, &address.sin_addr, ip_addr_buf, sizeof(ip_addr_buf));
+                    const auto *address_str = inet_ntop(AF_INET, &address.sin_addr, ip_addr_buf, sizeof(ip_addr_buf));
                     if (address_str == nullptr) address_str = "invalid address";
                     std::println("Resolving \"{}\" using {} ({})", sname, address_str, zone->domain);
                 }
 
-                auto payload_size = nameserver->udp_payload_size > 0
-                                        ? nameserver->udp_payload_size
-                                        : (zone->enable_edns ? EDNS_UDP_PAYLOAD_SIZE : STANDARD_UDP_PAYLOAD_SIZE);
+                auto payload_size = nameserver->udp_payload_size.value_or(
+                    zone->enable_edns ? EDNS_UDP_PAYLOAD_SIZE : STANDARD_UDP_PAYLOAD_SIZE);
 
                 // Write and send the request.
                 buffer.reserve(payload_size);
@@ -460,7 +460,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 if (zone->enable_edns) {
                     std::vector<RR> opt_rrset = get_rrset(response.additional, RRType::OPT, *zone, false);
                     if (opt_rrset.size() == 1) {
-                        const auto &opt = std::get<OPT>(opt_rrset[0].data);
+                        auto &opt = std::get<OPT>(opt_rrset[0].data);
 
                         rcode = static_cast<RCode>((static_cast<uint16_t>(opt.upper_extended_rcode) << 4)
                                                    | std::to_underlying(rcode));
@@ -516,10 +516,11 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                                 && find_covering_nsec3(nsec3_rrset, "*." + opt_proof_result->first, zone->domain)) {
                                 return std::vector<RR>{};
                             }
-
                             throw std::runtime_error("Failed to authenticate the denial of existence");
-                        } else {
-                            auto nsec_rrset = get_rrset(response.authority, RRType::NSEC, *zone);
+                        }
+
+                        auto nsec_rrset = get_rrset(response.authority, RRType::NSEC, *zone);
+                        if (!nsec_rrset.empty()) {
                             for (auto &nsec_rr : nsec_rrset) {
                                 if (nsec_covers_domain(nsec_rr, sname)) return std::vector<RR>{};
                             }
@@ -629,39 +630,41 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     zones[referral_zone->domain] = referral_zone;
                     next_zone = std::move(referral_zone);
                     break;
-                } else if (followed_cname) {
+                }
+
+                if (followed_cname) {
                     // There is no referral and CNAME points outside of this zone, restart the search.
                     return resolve_rec(sname, rr_type, depth);
-                } else {
-                    // Failed to find DNSKEYs, end the search.
-                    if (rr_type == RRType::DNSKEY && zone->dnskeys.empty()) return std::nullopt;
+                }
 
-                    // Look for the authenticated denial of existence.
-                    if (zone->enable_dnssec) {
-                        auto nsec3_rrset = get_rrset(response.authority, RRType::NSEC3, *zone);
-                        if (!nsec3_rrset.empty()) {
-                            auto nsec3 = find_matching_nsec3(nsec3_rrset, sname, zone->domain);
-                            if (nsec3.has_value() && !nsec3->types.contains(rr_type)
-                                && !nsec3->types.contains(RRType::CNAME)) {
+                // Failed to find DNSKEYs, end the search.
+                if (rr_type == RRType::DNSKEY && zone->dnskeys.empty()) return std::nullopt;
+
+                // Look for the authenticated denial of existence.
+                if (zone->enable_dnssec) {
+                    auto nsec3_rrset = get_rrset(response.authority, RRType::NSEC3, *zone);
+                    if (!nsec3_rrset.empty()) {
+                        auto nsec3 = find_matching_nsec3(nsec3_rrset, sname, zone->domain);
+                        if (nsec3.has_value() && !nsec3->types.contains(rr_type)
+                            && !nsec3->types.contains(RRType::CNAME)) {
+                            return std::vector<RR>{};
+                        }
+                    } else {
+                        auto nsec_rrset = get_rrset(response.authority, RRType::NSEC, sname, *zone);
+                        if (!nsec_rrset.empty()) {
+                            auto &nsec = std::get<NSEC>(nsec_rrset[0].data);
+                            if (!nsec.types.contains(rr_type) && !nsec.types.contains(RRType::CNAME)) {
                                 return std::vector<RR>{};
                             }
-                        } else {
-                            auto nsec_rrset = get_rrset(response.authority, RRType::NSEC, sname, *zone);
-                            if (!nsec_rrset.empty()) {
-                                auto &nsec = std::get<NSEC>(nsec_rrset[0].data);
-                                if (!nsec.types.contains(rr_type) && !nsec.types.contains(RRType::CNAME)) {
-                                    return std::vector<RR>{};
-                                }
-                            }
                         }
-                        throw std::runtime_error("Failed to authenticate the denial of existence");
                     }
-
-                    // No referral and no answer, try querying the safe zones if there are any left.
-                    next_zone = get_safe_zone(safe_zones);
-                    if (next_zone == nullptr) return std::nullopt;
-                    break;
+                    throw std::runtime_error("Failed to authenticate the denial of existence");
                 }
+
+                // No referral and no answer, try querying the safe zones if there are any left.
+                next_zone = get_safe_zone(safe_zones);
+                if (next_zone == nullptr) return std::nullopt;
+                break;
             } catch (const bad_cookie_error &) {
                 if (!nameserver->sent_bad_cookie) {
                     // Retry the same nameserver with the new server cookie once.

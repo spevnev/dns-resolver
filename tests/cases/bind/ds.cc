@@ -3,7 +3,7 @@
 #include "config.hh"
 #include "resolve.hh"
 
-int main(void) {
+int main() {
     // DS can only be specified for the delegation point, which is marked by NS record.
     /// ds NS ns.ds
     /// ds DS 12345 8 1 2923F6FA36614586EA09B4424B438915CC1B9B67

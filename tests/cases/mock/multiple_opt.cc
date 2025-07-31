@@ -11,7 +11,7 @@ MockResponse mock_response = {
     .additional_count = 1,
 };
 
-int main(void) {
+int main() {
     auto config = TEST_RESOLVER_CONFIG;
     config.edns = FeatureState::Require;
 

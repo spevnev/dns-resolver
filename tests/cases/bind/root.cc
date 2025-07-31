@@ -2,7 +2,7 @@
 #include "config.hh"
 #include "resolve.hh"
 
-int main(void) {
+int main() {
     Resolver resolver{{.nameserver = "1.1.1.1", .dnssec = FeatureState::Disable, .cookies = FeatureState::Disable}};
     auto opt_rrset = resolver.resolve(".", RRType::NS);
     ASSERT(opt_rrset.has_value());

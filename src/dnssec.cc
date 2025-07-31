@@ -20,6 +20,7 @@
 #include "encode.hh"
 #include "write.hh"
 
+namespace {
 struct RRWithData {
     std::reference_wrapper<const RR> rr;
     std::vector<std::string_view> labels;
@@ -37,7 +38,7 @@ using EVP_PKEY_CTX_unique_ptr = std::unique_ptr<EVP_PKEY_CTX, decltype([](auto *
 using ECDSA_SIG_unique_ptr = std::unique_ptr<ECDSA_SIG, decltype([](auto *sig) { ECDSA_SIG_free(sig); })>;
 using EVP_MD_CTX_unique_ptr = std::unique_ptr<EVP_MD_CTX, decltype([](auto *ctx) { EVP_MD_CTX_free(ctx); })>;
 
-static EVP_PKEY_unique_ptr load_rsa_key(const std::vector<uint8_t> &dnskey) {
+EVP_PKEY_unique_ptr load_rsa_key(const std::vector<uint8_t> &dnskey) {
     // If the first byte is non-zero, then it is the length,
     // if it is zero, then the length is encoded in the next two bytes.
     int exponent_size;
@@ -77,7 +78,7 @@ static EVP_PKEY_unique_ptr load_rsa_key(const std::vector<uint8_t> &dnskey) {
     return EVP_PKEY_unique_ptr{pkey};
 }
 
-static EVP_PKEY_unique_ptr load_ecdsa_key(const std::vector<uint8_t> &dnskey, const std::string &curve) {
+EVP_PKEY_unique_ptr load_ecdsa_key(const std::vector<uint8_t> &dnskey, const std::string &curve) {
     // DNSSEC stores key in uncompressed format and OpenSSL needs it to be
     // specified in the first byte of the key data.
     std::vector<uint8_t> key;
@@ -103,14 +104,14 @@ static EVP_PKEY_unique_ptr load_ecdsa_key(const std::vector<uint8_t> &dnskey, co
     return EVP_PKEY_unique_ptr{pkey};
 }
 
-static EVP_PKEY_unique_ptr load_eddsa_key(const std::vector<uint8_t> &dnskey, int type) {
-    auto pkey = EVP_PKEY_new_raw_public_key(type, NULL, dnskey.data(), dnskey.size());
+EVP_PKEY_unique_ptr load_eddsa_key(const std::vector<uint8_t> &dnskey, int type) {
+    auto *pkey = EVP_PKEY_new_raw_public_key(type, NULL, dnskey.data(), dnskey.size());
     if (pkey == nullptr) throw std::runtime_error("Failed to load EdDSA key");
     return EVP_PKEY_unique_ptr{pkey};
 }
 
 // Converts public key from the format used by DNSSEC into the format used by OpenSSL.
-static EVP_PKEY_unique_ptr load_dnskey(const DNSKEY &dnskey) {
+EVP_PKEY_unique_ptr load_dnskey(const DNSKEY &dnskey) {
     switch (dnskey.algorithm) {
         case SigningAlgorithm::RSASHA1:
         case SigningAlgorithm::RSASHA256:
@@ -127,7 +128,7 @@ static EVP_PKEY_unique_ptr load_dnskey(const DNSKEY &dnskey) {
     }
 }
 
-static std::vector<uint8_t> load_ecdsa_signature(const std::vector<uint8_t> &rrsig) {
+std::vector<uint8_t> load_ecdsa_signature(const std::vector<uint8_t> &rrsig) {
     ECDSA_SIG_unique_ptr sig{ECDSA_SIG_new()};
     int component_size = rrsig.size() / 2;
     BIGNUM *r = BN_bin2bn(rrsig.data(), component_size, nullptr);
@@ -143,7 +144,7 @@ static std::vector<uint8_t> load_ecdsa_signature(const std::vector<uint8_t> &rrs
 
     // i2d_ECDSA_SIG modifies the second argument so pass it a copy of `der`.
     std::vector<uint8_t> der(der_length);
-    auto tmp = der.data();
+    auto *tmp = der.data();
     if (i2d_ECDSA_SIG(sig.get(), &tmp) != der_length) {
         throw std::runtime_error("Failed to convert ECDSA signature to DER");
     }
@@ -151,7 +152,7 @@ static std::vector<uint8_t> load_ecdsa_signature(const std::vector<uint8_t> &rrs
 }
 
 // Converts signature from the format used by DNSSEC into the format used by OpenSSL (when needed).
-static std::vector<uint8_t> load_signature(const RRSIG &rrsig) {
+std::vector<uint8_t> load_signature(const RRSIG &rrsig) {
     switch (rrsig.algorithm) {
         case SigningAlgorithm::RSASHA1:
         case SigningAlgorithm::RSASHA256:
@@ -168,7 +169,7 @@ static std::vector<uint8_t> load_signature(const RRSIG &rrsig) {
     }
 }
 
-static const EVP_MD *get_ds_digest_algorithm(DigestAlgorithm algorithm) {
+const EVP_MD *get_ds_digest_algorithm(DigestAlgorithm algorithm) {
     switch (algorithm) {
         case DigestAlgorithm::SHA1:   return EVP_sha1();
         case DigestAlgorithm::SHA256: return EVP_sha256();
@@ -177,7 +178,7 @@ static const EVP_MD *get_ds_digest_algorithm(DigestAlgorithm algorithm) {
     }
 }
 
-static const EVP_MD *get_rrsig_digest_algorithm(SigningAlgorithm algorithm) {
+const EVP_MD *get_rrsig_digest_algorithm(SigningAlgorithm algorithm) {
     switch (algorithm) {
         case SigningAlgorithm::RSASHA1:
         case SigningAlgorithm::RSASHA256:
@@ -190,14 +191,14 @@ static const EVP_MD *get_rrsig_digest_algorithm(SigningAlgorithm algorithm) {
     }
 }
 
-static const EVP_MD *get_nsec3_hash_algorithm(HashAlgorithm algorithm) {
+const EVP_MD *get_nsec3_hash_algorithm(HashAlgorithm algorithm) {
     switch (algorithm) {
         case HashAlgorithm::SHA1: return EVP_sha1();
         default:                  throw std::runtime_error("Unknown digest algorithm");
     }
 }
 
-static std::vector<std::string_view> domain_to_labels(const std::string_view &domain) {
+std::vector<std::string_view> domain_to_labels(const std::string_view &domain) {
     std::vector<std::string_view> labels;
     auto pos = domain.size() - 1;
     while (pos > 0) {
@@ -213,7 +214,7 @@ static std::vector<std::string_view> domain_to_labels(const std::string_view &do
     return labels;
 }
 
-static std::vector<RRWithData> add_data_to_rrset(const std::vector<RR> &rrset) {
+std::vector<RRWithData> add_data_to_rrset(const std::vector<RR> &rrset) {
     std::vector<RRWithData> result;
     result.reserve(rrset.size());
 
@@ -222,7 +223,7 @@ static std::vector<RRWithData> add_data_to_rrset(const std::vector<RR> &rrset) {
         switch (rr.type) {
             case RRType::A: {
                 auto address = std::get<A>(rr.data).address;
-                auto address_ptr = reinterpret_cast<const uint8_t *>(&address);
+                const auto *address_ptr = reinterpret_cast<const uint8_t *>(&address);
                 rr_with_data.data.assign(address_ptr, address_ptr + sizeof(address));
             } break;
             case RRType::NS:    write_domain(rr_with_data.data, std::get<NS>(rr.data).domain); break;
@@ -248,7 +249,7 @@ static std::vector<RRWithData> add_data_to_rrset(const std::vector<RR> &rrset) {
             } break;
             case RRType::AAAA: {
                 auto address = std::get<AAAA>(rr.data).address;
-                auto address_ptr = reinterpret_cast<const uint8_t *>(&address);
+                const auto *address_ptr = reinterpret_cast<const uint8_t *>(&address);
                 rr_with_data.data.assign(address_ptr, address_ptr + sizeof(address));
             } break;
             case RRType::DS:     rr_with_data.data = std::get<DS>(rr.data).data; break;
@@ -289,41 +290,40 @@ class RRSIGStreamDigest : public RRSIGDigest {
 public:
     RRSIGStreamDigest(EVP_MD_CTX *ctx, const EVP_MD *algorithm, EVP_PKEY *pkey) : RRSIGDigest(ctx, algorithm, pkey) {}
 
-    virtual void update(const std::vector<uint8_t> &data) {
+    void update(const std::vector<uint8_t> &data) override {
         if (EVP_DigestVerifyUpdate(ctx, data.data(), data.size()) != 1) {
             throw std::runtime_error("Failed to update RRSIG digest");
         }
     }
 
-    virtual void update(uint16_t value) {
+    void update(uint16_t value) override {
         auto value_net = htons(value);
         if (EVP_DigestVerifyUpdate(ctx, &value_net, sizeof(value_net)) != 1) {
             throw std::runtime_error("Failed to update RRSIG digest");
         }
     }
 
-    virtual void update(uint32_t value) {
+    void update(uint32_t value) override {
         auto value_net = htonl(value);
         if (EVP_DigestVerifyUpdate(ctx, &value_net, sizeof(value_net)) != 1) {
             throw std::runtime_error("Failed to update RRSIG digest");
         }
     }
 
-    virtual bool verify(const std::vector<uint8_t> &signature) {
+    bool verify(const std::vector<uint8_t> &signature) override {
         return EVP_DigestVerifyFinal(ctx, signature.data(), signature.size()) == 1;
     }
 };
 
 class RRSIGOneShotDigest : public RRSIGDigest {
 public:
-    RRSIGOneShotDigest(EVP_MD_CTX *ctx, const EVP_MD *algorithm, EVP_PKEY *pkey)
-        : RRSIGDigest(ctx, algorithm, pkey), buffer() {}
+    RRSIGOneShotDigest(EVP_MD_CTX *ctx, const EVP_MD *algorithm, EVP_PKEY *pkey) : RRSIGDigest(ctx, algorithm, pkey) {}
 
-    virtual void update(const std::vector<uint8_t> &data) { buffer.append_range(data); }
-    virtual void update(uint16_t value) { write_u16(buffer, value); }
-    virtual void update(uint32_t value) { write_u32(buffer, value); }
+    void update(const std::vector<uint8_t> &data) override { buffer.append_range(data); }
+    void update(uint16_t value) override { write_u16(buffer, value); }
+    void update(uint32_t value) override { write_u32(buffer, value); }
 
-    virtual bool verify(const std::vector<uint8_t> &signature) {
+    bool verify(const std::vector<uint8_t> &signature) override {
         return EVP_DigestVerify(ctx, signature.data(), signature.size(), buffer.data(), buffer.size()) == 1;
     }
 
@@ -331,8 +331,8 @@ private:
     std::vector<uint8_t> buffer;
 };
 
-static std::unique_ptr<RRSIGDigest> new_rrsig_digest(EVP_MD_CTX *ctx, const DNSKEY &dnskey) {
-    auto algorithm = get_rrsig_digest_algorithm(dnskey.algorithm);
+std::unique_ptr<RRSIGDigest> new_rrsig_digest(EVP_MD_CTX *ctx, const DNSKEY &dnskey) {
+    const auto *algorithm = get_rrsig_digest_algorithm(dnskey.algorithm);
     auto pkey = load_dnskey(dnskey);
 
     switch (dnskey.algorithm) {
@@ -347,8 +347,9 @@ static std::unique_ptr<RRSIGDigest> new_rrsig_digest(EVP_MD_CTX *ctx, const DNSK
     }
 }
 
-static int compare_domains(const std::vector<std::string_view> &a, const std::vector<std::string_view> &b) {
-    auto a_it = a.cbegin(), b_it = b.cbegin();
+int compare_domains(const std::vector<std::string_view> &a, const std::vector<std::string_view> &b) {
+    auto a_it = a.cbegin();
+    auto b_it = b.cbegin();
     while (a_it != a.cend() && b_it != b.cend()) {
         auto result = a_it->compare(*b_it);
         if (result != 0) return result;
@@ -359,20 +360,18 @@ static int compare_domains(const std::vector<std::string_view> &a, const std::ve
     return 0;
 }
 
-static bool is_domain_between(const std::string_view &domain, const std::string_view &before,
-                              const std::string_view &after) {
+bool is_domain_between(const std::string_view &domain, const std::string_view &before, const std::string_view &after) {
     auto before_labels = domain_to_labels(before);
     auto after_labels = domain_to_labels(after);
     auto domain_labels = domain_to_labels(domain);
     return compare_domains(before_labels, domain_labels) < 0 && compare_domains(domain_labels, after_labels) < 0;
 }
 
-static std::string get_nsec3_domain(const NSEC3 &nsec3, const std::string_view &domain,
-                                    const std::string &zone_domain) {
+std::string get_nsec3_domain(const NSEC3 &nsec3, const std::string_view &domain, const std::string &zone_domain) {
     EVP_MD_CTX_unique_ptr ctx{EVP_MD_CTX_new()};
     if (ctx == nullptr) throw std::runtime_error("Failed to create digest context");
 
-    auto hash_algorithm = get_nsec3_hash_algorithm(nsec3.algorithm);
+    const auto *hash_algorithm = get_nsec3_hash_algorithm(nsec3.algorithm);
     auto digest_size = EVP_MD_get_size(hash_algorithm);
     if (digest_size <= 0) throw std::runtime_error("Failed to get digest size");
 
@@ -398,6 +397,7 @@ static std::string get_nsec3_domain(const NSEC3 &nsec3, const std::string_view &
 
     return base32_encode(digest) + "." + zone_domain;
 }
+}  // namespace
 
 int get_ds_digest_size(DigestAlgorithm algorithm) {
     auto digest_size = EVP_MD_get_size(get_ds_digest_algorithm(algorithm));
@@ -424,11 +424,12 @@ std::vector<DNSKEY> verify_dnskeys(const std::vector<RR> &dnskey_rrset, const st
     EVP_MD_CTX_unique_ptr ctx{EVP_MD_CTX_new()};
     if (ctx == nullptr) return {};
 
-    std::vector<uint8_t> canonical_domain, digest;
+    std::vector<uint8_t> canonical_domain;
+    std::vector<uint8_t> digest;
     std::vector<DNSKEY> verified_dnskeys;
     for (const auto &ds : dss) {
         try {
-            auto digest_algorithm = get_ds_digest_algorithm(ds.digest_algorithm);
+            const auto *digest_algorithm = get_ds_digest_algorithm(ds.digest_algorithm);
             auto digest_size = EVP_MD_get_size(digest_algorithm);
             if (digest_size <= 0) continue;
 
@@ -493,7 +494,6 @@ bool verify_rrsig(const std::vector<RR> &rrset, const std::vector<RRSIG> &rrsigs
                 try {
                     if (rrsig.key_tag != dnskey.key_tag) continue;
                     if (rrsig.algorithm != dnskey.algorithm) continue;
-                    if (rrsig.signer_name != zone_domain) continue;
 
                     auto digest = new_rrsig_digest(ctx.get(), dnskey);
                     digest->update(rrsig.data);
@@ -525,7 +525,7 @@ bool verify_rrsig(const std::vector<RR> &rrset, const std::vector<RRSIG> &rrsigs
 }
 
 bool nsec_covers_domain(const RR &nsec_rr, const std::string &domain) {
-    auto &nsec = std::get<NSEC>(nsec_rr.data);
+    const auto &nsec = std::get<NSEC>(nsec_rr.data);
     return is_domain_between(domain, nsec_rr.domain, nsec.next_domain);
 }
 
@@ -533,11 +533,11 @@ std::optional<NSEC3> find_covering_nsec3(const std::vector<RR> &nsec3_rrset, con
                                          const std::string &zone_domain) {
     try {
         if (nsec3_rrset.empty()) return std::nullopt;
-        auto &nsec3 = std::get<NSEC3>(nsec3_rrset[0].data);
+        const auto &nsec3 = std::get<NSEC3>(nsec3_rrset[0].data);
 
         auto covered_domain = get_nsec3_domain(nsec3, domain, zone_domain);
-        for (auto &nsec3_rr : nsec3_rrset) {
-            auto &nsec3 = std::get<NSEC3>(nsec3_rr.data);
+        for (const auto &nsec3_rr : nsec3_rrset) {
+            const auto &nsec3 = std::get<NSEC3>(nsec3_rr.data);
             auto next_domain = base32_encode(nsec3.next_domain_hash) + "." + zone_domain;
             if (is_domain_between(covered_domain, nsec3_rr.domain, next_domain)) return std::get<NSEC3>(nsec3_rr.data);
         }
@@ -550,10 +550,10 @@ std::optional<NSEC3> find_matching_nsec3(const std::vector<RR> &nsec3_rrset, con
                                          const std::string &zone_domain) {
     try {
         if (nsec3_rrset.empty()) return std::nullopt;
-        auto &nsec3 = std::get<NSEC3>(nsec3_rrset[0].data);
+        const auto &nsec3 = std::get<NSEC3>(nsec3_rrset[0].data);
 
         auto matching_domain = get_nsec3_domain(nsec3, domain, zone_domain);
-        for (auto &nsec3_rr : nsec3_rrset) {
+        for (const auto &nsec3_rr : nsec3_rrset) {
             if (nsec3_rr.domain == matching_domain) return std::get<NSEC3>(nsec3_rr.data);
         }
     } catch (...) {

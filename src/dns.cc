@@ -15,14 +15,16 @@
 #include "dnssec.hh"
 #include "write.hh"
 
+namespace {
 template <std::integral T>
-static T random_int() {
-    T i;
-    if (RAND_bytes(reinterpret_cast<unsigned char *>(&i), sizeof(i)) != 1) {
+T random_int() {
+    T result;
+    if (RAND_bytes(reinterpret_cast<unsigned char *>(&result), sizeof(result)) != 1) {
         throw std::runtime_error{"Failed to generate random bytes"};
     }
-    return i;
+    return result;
 }
+}  // namespace
 
 uint16_t write_request(std::vector<uint8_t> &buffer, uint16_t payload_size, const std::string &domain, RRType rr_type,
                        bool enable_rd, bool enable_edns, bool enable_dnssec, bool enable_cookies, DNSCookies &cookies) {
@@ -170,7 +172,7 @@ private:
 
                 if (offset + label_length > buffer.size()) throw std::runtime_error("Response is too short");
                 std::transform(buffer.cbegin() + offset, buffer.cbegin() + offset + label_length,
-                               std::back_inserter(domain), [](auto c) { return std::tolower(c); });
+                               std::back_inserter(domain), [](auto ch) { return std::tolower(ch); });
                 offset += label_length;
                 domain.push_back('.');
             } else if (allow_compression && type == LABEL_TYPE_POINTER) {
@@ -257,8 +259,9 @@ private:
 
             switch (option_code) {
                 case OptionCode::Cookies:
-                    if (!(16 <= option_length && option_length <= 40))
+                    if (!(16 <= option_length && option_length <= 40)) {
                         throw std::runtime_error("Invalid cookies length");
+                    }
 
                     opt.cookies = DNSCookies{};
                     opt.cookies->client = read<uint64_t>();

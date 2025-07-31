@@ -2,7 +2,7 @@
 #include "config.hh"
 #include "resolve.hh"
 
-int main(void) {
+int main() {
     auto config = TEST_RESOLVER_CONFIG;
     config.timeout_ms = 500;
     config.nameserver = "127.0.0.2";

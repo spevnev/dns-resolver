@@ -305,7 +305,7 @@ public:
 
 private:
     // Print set of RR types in ascending order.
-    void print_types(std::back_insert_iterator<std::string> &out, const std::unordered_set<RRType> &type_set) const {
+    static void print_types(std::back_insert_iterator<std::string> &out, const std::unordered_set<RRType> &type_set) {
         std::vector<RRType> types{type_set.cbegin(), type_set.cend()};
         std::ranges::sort(types, std::less<>{});
 

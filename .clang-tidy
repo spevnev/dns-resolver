@@ -1,0 +1,26 @@
+Checks: >
+  clang-diagnostic-*,
+  clang-analyzer-*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-empty-catch,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  -modernize-avoid-c-arrays,
+  performance-*,
+  -performance-enum-size,
+  portability-*,
+  readability-*,
+  -readability-implicit-bool-conversion,
+  -readability-simplify-boolean-expr,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-function-cognitive-complexity,
+  -readability-redundant-member-init,
+  misc-*,
+  -misc-no-recursion,
+  -misc-non-private-member-variables-in-classes
+CheckOptions:
+  bugprone-narrowing-conversions.WarnOnIntegerNarrowingConversion: false
+  readability-braces-around-statements.ShortStatementLines: 1
+  misc-use-internal-linkage.FixMode: None
