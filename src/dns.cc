@@ -1,7 +1,6 @@
 #include "dns.hh"
 #include <netinet/in.h>
 #include <openssl/rand.h>
-#include <cassert>
 #include <concepts>
 #include <cstdint>
 #include <cstring>
@@ -118,11 +117,6 @@ public:
     }
 
 private:
-    static const uint8_t LABEL_DATA_MASK = 0b00111111;
-    static const uint8_t LABEL_TYPE_MASK = 0b11000000;
-    static const uint8_t LABEL_TYPE_POINTER = 0b11000000;
-    static const uint8_t LABEL_TYPE_NORMAL = 0b00000000;
-
     const std::vector<uint8_t> &buffer;
     size_t offset;
 
@@ -161,6 +155,11 @@ private:
     }
 
     void read_domain_rec(bool allow_compression, std::string &domain) {
+        const uint8_t LABEL_DATA_MASK = 0b00111111;
+        const uint8_t LABEL_TYPE_MASK = 0b11000000;
+        const uint8_t LABEL_TYPE_POINTER = 0b11000000;
+        const uint8_t LABEL_TYPE_NORMAL = 0b00000000;
+
         for (;;) {
             auto byte = read_u8();
             auto type = byte & LABEL_TYPE_MASK;

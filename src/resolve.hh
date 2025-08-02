@@ -33,7 +33,6 @@ struct Nameserver {
 struct Zone {
     // Do not ask the zone whose nameserver is being resolved.
     bool is_being_resolved{false};
-    bool no_secure_delegation{false};
     std::string domain;
     bool enable_edns;
     bool enable_dnssec;
@@ -106,15 +105,13 @@ private:
 
     std::shared_ptr<Zone> new_zone(const std::string &domain) const;
     std::shared_ptr<Zone> find_zone(const std::string &domain) const;
-    void zone_disable_edns(Zone &zone) const;
     void zone_disable_dnssec(Zone &zone) const;
-    void zone_disable_cookies(Zone &zone) const;
 
     bool verify_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &rrsigs, RRType rr_type,
                       const Zone &zone) const;
-    std::vector<RR> get_rrset(std::vector<RR> &rrset, RRType rr_type, const Zone &zone, bool verify = true) const;
+    std::vector<RR> get_rrset(std::vector<RR> &rrset, RRType rr_type, const Zone &zone, bool authenticate = true) const;
     std::vector<RR> get_rrset(std::vector<RR> &rrset, RRType rr_type, const std::string &domain, const Zone &zone,
-                              bool verify = true) const;
+                              bool authenticate = true) const;
 
     template <typename T>
         requires IsInVariant<T, decltype(RR::data)>

@@ -1,5 +1,4 @@
 #include "encode.hh"
-#include <cassert>
 #include <cstdint>
 #include <string>
 #include <vector>

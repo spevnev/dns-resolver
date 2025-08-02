@@ -199,6 +199,7 @@ const EVP_MD *get_nsec3_hash_algorithm(HashAlgorithm algorithm) {
 }
 
 std::vector<std::string_view> domain_to_labels(const std::string_view &domain) {
+    assert(!domain.empty());
     std::vector<std::string_view> labels;
     auto pos = domain.size() - 1;
     while (pos > 0) {
@@ -217,7 +218,6 @@ std::vector<std::string_view> domain_to_labels(const std::string_view &domain) {
 std::vector<RRWithData> add_data_to_rrset(const std::vector<RR> &rrset) {
     std::vector<RRWithData> result;
     result.reserve(rrset.size());
-
     for (const auto &rr : rrset) {
         RRWithData rr_with_data{rr, domain_to_labels(rr.domain)};
         switch (rr.type) {
@@ -260,7 +260,6 @@ std::vector<RRWithData> add_data_to_rrset(const std::vector<RR> &rrset) {
             case RRType::RRSIG:  throw std::runtime_error("RRSIG RR cannot have RRSIG");
             default:             throw std::runtime_error("Unknown RR type");
         }
-
         result.push_back(rr_with_data);
     }
     return result;
@@ -397,6 +396,71 @@ std::string get_nsec3_domain(const NSEC3 &nsec3, const std::string_view &domain,
 
     return base32_encode(digest) + "." + zone_domain;
 }
+
+std::optional<NSEC3> find_covering_nsec3(const std::vector<RR> &nsec3_rrset, const std::string_view &domain,
+                                         const std::string &zone_domain) {
+    try {
+        if (nsec3_rrset.empty()) return std::nullopt;
+        const auto &nsec3 = std::get<NSEC3>(nsec3_rrset[0].data);
+
+        auto covered_domain = get_nsec3_domain(nsec3, domain, zone_domain);
+        for (const auto &nsec3_rr : nsec3_rrset) {
+            const auto &nsec3 = std::get<NSEC3>(nsec3_rr.data);
+            auto next_domain = base32_encode(nsec3.next_domain_hash) + "." + zone_domain;
+            if (is_domain_between(covered_domain, nsec3_rr.domain, next_domain)) return std::get<NSEC3>(nsec3_rr.data);
+        }
+    } catch (...) {
+    }
+    return std::nullopt;
+}
+
+std::optional<NSEC3> find_matching_nsec3(const std::vector<RR> &nsec3_rrset, const std::string_view &domain,
+                                         const std::string &zone_domain) {
+    try {
+        if (nsec3_rrset.empty()) return std::nullopt;
+        const auto &nsec3 = std::get<NSEC3>(nsec3_rrset[0].data);
+
+        auto matching_domain = get_nsec3_domain(nsec3, domain, zone_domain);
+        for (const auto &nsec3_rr : nsec3_rrset) {
+            if (nsec3_rr.domain == matching_domain) return std::get<NSEC3>(nsec3_rr.data);
+        }
+    } catch (...) {
+    }
+    return std::nullopt;
+}
+
+struct EncloserProof {
+    std::string closest_encloser_domain;
+    bool next_closer_opt_out;
+};
+
+std::optional<EncloserProof> verify_closest_encloser_proof(const std::vector<RR> &nsec3_rrset,
+                                                           const std::string &domain, const std::string &zone_domain) {
+    if (nsec3_rrset.empty()) return std::nullopt;
+
+    std::optional<NSEC3> next_closer;
+    std::string_view sname{domain};
+    for (;;) {
+        auto nsec3 = find_matching_nsec3(nsec3_rrset, sname, zone_domain);
+        if (nsec3.has_value()) {
+            if (!next_closer.has_value()) return std::nullopt;
+            if (nsec3->types.contains(RRType::DNAME)) return std::nullopt;
+            if (nsec3->types.contains(RRType::NS) && !nsec3->types.contains(RRType::SOA)) return std::nullopt;
+            return EncloserProof{
+                .closest_encloser_domain = std::string{sname},
+                .next_closer_opt_out = next_closer->opt_out,
+            };
+        }
+
+        next_closer = find_covering_nsec3(nsec3_rrset, sname, zone_domain);
+
+        if (sname == ".") return std::nullopt;
+        auto next_label_index = sname.find('.');
+        assert(next_label_index != std::string::npos);
+        if (next_label_index != sname.size() - 1) next_label_index++;
+        sname.remove_prefix(next_label_index);
+    }
+}
 }  // namespace
 
 int get_ds_digest_size(DigestAlgorithm algorithm) {
@@ -418,7 +482,74 @@ uint16_t compute_key_tag(const std::vector<uint8_t> &data) {
     return ac & 0xFFFF;
 }
 
-std::vector<DNSKEY> verify_dnskeys(const std::vector<RR> &dnskey_rrset, const std::vector<DS> &dss) {
+bool authenticate_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &rrsigs,
+                        const std::vector<DNSKEY> &dnskeys, const std::string &zone_domain) {
+    if (rrset.empty()) return true;
+    if (rrsigs.empty() || dnskeys.empty()) return false;
+
+    try {
+        auto rrs_with_data = add_data_to_rrset(rrset);
+        std::ranges::sort(rrs_with_data, [](const auto &a, const auto &b) {
+            int result = compare_domains(a.labels, b.labels);
+            if (result != 0) return result < 0;
+
+            result = std::memcmp(a.data.data(), b.data.data(), std::min(a.data.size(), b.data.size()));
+            if (result != 0) return result < 0;
+
+            return a.data.size() > b.data.size() ? false : true;
+        });
+
+        EVP_MD_CTX_unique_ptr ctx{EVP_MD_CTX_new()};
+        if (ctx == nullptr) return false;
+
+        auto time_now = time(nullptr);
+        std::vector<uint8_t> canonical_domain;
+        for (const auto &rrsig : rrsigs) {
+            try {
+                if (rrsig.type_covered != rrset[0].type) continue;
+                if (!(rrsig.inception_time <= time_now && time_now <= rrsig.expiration_time)) continue;
+                if (rrsig.signer_name != zone_domain) continue;
+                if (rrsig.labels > rrs_with_data[0].labels.size()) continue;
+
+                auto signature = load_signature(rrsig);
+                for (const auto &dnskey : dnskeys) {
+                    try {
+                        if (rrsig.key_tag != dnskey.key_tag) continue;
+                        if (rrsig.algorithm != dnskey.algorithm) continue;
+
+                        auto digest = new_rrsig_digest(ctx.get(), dnskey);
+                        digest->update(rrsig.data);
+                        for (const auto &rr_with_data : rrs_with_data) {
+                            const RR &rr = rr_with_data.rr;
+
+                            canonical_domain.clear();
+                            write_domain(canonical_domain, rr.domain);
+
+                            digest->update(canonical_domain);
+                            digest->update(rr.type);
+                            digest->update(DNSClass::Internet);
+                            digest->update(rrsig.original_ttl);
+                            digest->update(static_cast<uint16_t>(rr_with_data.data.size()));
+                            digest->update(rr_with_data.data);
+                        }
+                        if (digest->verify(signature)) return true;
+                    } catch (...) {
+                        // Try different DNSKEY.
+                        continue;
+                    }
+                }
+            } catch (...) {
+                // Try different RRSIG.
+                continue;
+            }
+        }
+    } catch (...) {
+    }
+    return false;
+}
+
+bool authenticate_delegation(const std::vector<RR> &dnskey_rrset, const std::vector<DS> &dss,
+                             const std::vector<RRSIG> &rrsigs, const std::string &zone_domain) {
     if (dnskey_rrset.empty() || dss.empty()) return {};
 
     EVP_MD_CTX_unique_ptr ctx{EVP_MD_CTX_new()};
@@ -458,130 +589,62 @@ std::vector<DNSKEY> verify_dnskeys(const std::vector<RR> &dnskey_rrset, const st
             continue;
         }
     }
-    return verified_dnskeys;
+    return authenticate_rrset(dnskey_rrset, rrsigs, verified_dnskeys, zone_domain);
 }
 
-bool verify_rrsig(const std::vector<RR> &rrset, const std::vector<RRSIG> &rrsigs, const std::vector<DNSKEY> &dnskeys,
-                  const std::string &zone_domain) {
-    if (rrset.empty()) return true;
-    if (rrsigs.empty() || dnskeys.empty()) return false;
+bool authenticate_name_error(const std::string &domain, const std::vector<RR> &nsec3_rrset,
+                             const std::vector<RR> &nsec_rrset, const std::string &zone_domain) {
+    if (!nsec3_rrset.empty()) {
+        auto encloser_proof = verify_closest_encloser_proof(nsec3_rrset, domain, zone_domain);
+        if (!encloser_proof.has_value()) return false;
 
-    auto rrs_with_data = add_data_to_rrset(rrset);
-    std::ranges::sort(rrs_with_data, [](const auto &a, const auto &b) {
-        int result = compare_domains(a.labels, b.labels);
-        if (result != 0) return result < 0;
-
-        result = std::memcmp(a.data.data(), b.data.data(), std::min(a.data.size(), b.data.size()));
-        if (result != 0) return result < 0;
-
-        return a.data.size() > b.data.size() ? false : true;
-    });
-
-    EVP_MD_CTX_unique_ptr ctx{EVP_MD_CTX_new()};
-    if (ctx == nullptr) return false;
-
-    auto time_now = time(nullptr);
-    std::vector<uint8_t> canonical_domain;
-    for (const auto &rrsig : rrsigs) {
-        try {
-            if (rrsig.type_covered != rrset[0].type) continue;
-            if (!(rrsig.inception_time <= time_now && time_now <= rrsig.expiration_time)) continue;
-            if (rrsig.signer_name != zone_domain) continue;
-            if (rrsig.labels > rrs_with_data[0].labels.size()) continue;
-
-            auto signature = load_signature(rrsig);
-            for (const auto &dnskey : dnskeys) {
-                try {
-                    if (rrsig.key_tag != dnskey.key_tag) continue;
-                    if (rrsig.algorithm != dnskey.algorithm) continue;
-
-                    auto digest = new_rrsig_digest(ctx.get(), dnskey);
-                    digest->update(rrsig.data);
-                    for (const auto &rr_with_data : rrs_with_data) {
-                        const RR &rr = rr_with_data.rr;
-
-                        canonical_domain.clear();
-                        write_domain(canonical_domain, rr.domain);
-
-                        digest->update(canonical_domain);
-                        digest->update(rr.type);
-                        digest->update(DNSClass::Internet);
-                        digest->update(rrsig.original_ttl);
-                        digest->update(static_cast<uint16_t>(rr_with_data.data.size()));
-                        digest->update(rr_with_data.data);
-                    }
-                    if (digest->verify(signature)) return true;
-                } catch (...) {
-                    // Try different DNSKEY.
-                    continue;
-                }
-            }
-        } catch (...) {
-            // Try different RRSIG.
-            continue;
-        }
+        auto wildcard_domain = "*." + encloser_proof->closest_encloser_domain;
+        return find_covering_nsec3(nsec3_rrset, wildcard_domain, zone_domain).has_value();
     }
+
+    for (const auto &rr : nsec_rrset) {
+        const auto &nsec = std::get<NSEC>(rr.data);
+        if (is_domain_between(domain, rr.domain, nsec.next_domain)) return true;
+    }
+
     return false;
 }
 
-bool nsec_covers_domain(const RR &nsec_rr, const std::string &domain) {
-    const auto &nsec = std::get<NSEC>(nsec_rr.data);
-    return is_domain_between(domain, nsec_rr.domain, nsec.next_domain);
-}
-
-std::optional<NSEC3> find_covering_nsec3(const std::vector<RR> &nsec3_rrset, const std::string_view &domain,
-                                         const std::string &zone_domain) {
-    try {
-        if (nsec3_rrset.empty()) return std::nullopt;
-        const auto &nsec3 = std::get<NSEC3>(nsec3_rrset[0].data);
-
-        auto covered_domain = get_nsec3_domain(nsec3, domain, zone_domain);
-        for (const auto &nsec3_rr : nsec3_rrset) {
-            const auto &nsec3 = std::get<NSEC3>(nsec3_rr.data);
-            auto next_domain = base32_encode(nsec3.next_domain_hash) + "." + zone_domain;
-            if (is_domain_between(covered_domain, nsec3_rr.domain, next_domain)) return std::get<NSEC3>(nsec3_rr.data);
-        }
-    } catch (...) {
-    }
-    return std::nullopt;
-}
-
-std::optional<NSEC3> find_matching_nsec3(const std::vector<RR> &nsec3_rrset, const std::string_view &domain,
-                                         const std::string &zone_domain) {
-    try {
-        if (nsec3_rrset.empty()) return std::nullopt;
-        const auto &nsec3 = std::get<NSEC3>(nsec3_rrset[0].data);
-
-        auto matching_domain = get_nsec3_domain(nsec3, domain, zone_domain);
-        for (const auto &nsec3_rr : nsec3_rrset) {
-            if (nsec3_rr.domain == matching_domain) return std::get<NSEC3>(nsec3_rr.data);
-        }
-    } catch (...) {
-    }
-    return std::nullopt;
-}
-
-std::optional<std::pair<std::string, NSEC3>> verify_closest_encloser_proof(const std::vector<RR> &nsec3_rrset,
-                                                                           const std::string &domain,
-                                                                           const std::string &zone_domain) {
-    if (nsec3_rrset.empty()) return std::nullopt;
-
-    std::optional<NSEC3> next_closer;
-    std::string_view sname{domain};
-    for (;;) {
-        auto nsec3 = find_matching_nsec3(nsec3_rrset, sname, zone_domain);
+bool authenticate_no_ds(const std::string &domain, const std::vector<RR> &nsec3_rrset, const std::optional<RR> &nsec_rr,
+                        const std::string &zone_domain) {
+    if (!nsec3_rrset.empty()) {
+        auto nsec3 = find_matching_nsec3(nsec3_rrset, domain, zone_domain);
         if (nsec3.has_value()) {
-            if (!next_closer.has_value()) return std::nullopt;
-            if (nsec3->types.contains(RRType::DNAME)) return std::nullopt;
-            if (nsec3->types.contains(RRType::NS) && !nsec3->types.contains(RRType::SOA)) return std::nullopt;
-            return std::pair<std::string, NSEC3>{std::string{sname}, std::move(next_closer.value())};
+            if (nsec3->types.contains(RRType::DS) || nsec3->types.contains(RRType::CNAME)) return false;
+
+            return true;
         }
 
-        next_closer = find_covering_nsec3(nsec3_rrset, sname, zone_domain);
-
-        if (sname == ".") return std::nullopt;
-        auto next_label_index = sname.find('.');
-        if (next_label_index != sname.size() - 1) next_label_index++;
-        sname.remove_prefix(next_label_index);
+        // If no NSEC3 matches the name, the next closer NSEC3 must have opt out flag set.
+        auto encloser_proof = verify_closest_encloser_proof(nsec3_rrset, domain, zone_domain);
+        return encloser_proof.has_value() && encloser_proof->next_closer_opt_out;
     }
+
+    if (!nsec_rr.has_value()) return false;
+
+    const auto &nsec = std::get<NSEC>(nsec_rr->data);
+    if (nsec.types.contains(RRType::DS) || nsec.types.contains(RRType::CNAME)) return false;
+
+    return true;
+}
+
+bool authenticate_no_rrset(RRType rr_type, const std::string &domain, const std::vector<RR> &nsec3_rrset,
+                           const std::optional<RR> &nsec_rr, const std::string &zone_domain) {
+    if (!nsec3_rrset.empty()) {
+        auto nsec3 = find_matching_nsec3(nsec3_rrset, domain, zone_domain);
+        if (!nsec3.has_value()) return false;
+        if (nsec3->types.contains(rr_type) || nsec3->types.contains(RRType::CNAME)) return false;
+        return true;
+    }
+
+    if (!nsec_rr.has_value()) return false;
+
+    const auto &nsec = std::get<NSEC>(nsec_rr->data);
+    if (nsec.types.contains(rr_type) || nsec.types.contains(RRType::CNAME)) return false;
+    return true;
 }
