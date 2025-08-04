@@ -53,15 +53,14 @@ public:
     std::optional<std::vector<RR>> resolve(const std::string &domain, RRType rr_type);
 
 private:
-    std::chrono::duration<uint64_t, std::milli> timeout_duration;
-    uint64_t udp_timeout_ms;
+    uint64_t query_timeout_ms, udp_timeout_ms;
     uint16_t port;
     bool verbose, enable_rd;
     FeatureState edns, dnssec, cookies;
     std::default_random_engine rng;
     std::unordered_map<std::string, std::shared_ptr<Zone>, StringHash, std::equal_to<>> zones;
     int fd;
-    std::chrono::time_point<std::chrono::steady_clock> timeout_instant;
+    std::chrono::time_point<std::chrono::steady_clock> query_start;
     // List of zones to ask when the resolver has no information.
     std::queue<std::shared_ptr<Zone>> safe_zones;
 

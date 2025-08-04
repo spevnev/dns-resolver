@@ -50,7 +50,7 @@ struct Zone {
 };
 
 namespace {
-const constexpr uint64_t MIN_UDP_TIMEOUT_MS = 300;
+const constexpr uint64_t MIN_QUERY_TIMEOUT_MS = 300;
 const constexpr int MAX_QUERY_DEPTH = 20;
 
 // https://www.iana.org/domains/root/servers
@@ -77,6 +77,11 @@ const DS ROOT_DS[]
                       0x29, 0x8D, 0x0A, 0x45, 0x0D, 0x61, 0x2C, 0x48, 0x3A, 0xF4, 0x44, 0xA4, 0xC0, 0xFB, 0x2B, 0x16},
            .data = {},
        }};
+
+class query_timeout_error : std::runtime_error {
+public:
+    query_timeout_error() : std::runtime_error("Query timed out") {}
+};
 
 class bad_cookie_error : std::runtime_error {
 public:
@@ -135,8 +140,8 @@ bool address_equals(struct sockaddr_in a, struct sockaddr_in b) {
 }  // namespace
 
 Resolver::Resolver(ResolverConfig config)
-    : timeout_duration(config.timeout_ms),
-      udp_timeout_ms(std::max(config.timeout_ms / 5, MIN_UDP_TIMEOUT_MS)),
+    : query_timeout_ms(std::max(config.timeout_ms, MIN_QUERY_TIMEOUT_MS)),
+      udp_timeout_ms(query_timeout_ms / 3),
       port(config.port),
       verbose(config.verbose),
       enable_rd(config.enable_rd),
@@ -175,7 +180,7 @@ std::optional<std::vector<RR>> Resolver::resolve(const std::string &domain, RRTy
     if (rr_type == RRType::RRSIG || rr_type == RRType::OPT) return std::nullopt;
 
     try {
-        timeout_instant = std::chrono::steady_clock::now() + timeout_duration;
+        query_start = std::chrono::steady_clock::now();
         set_socket_timeout(udp_timeout_ms);
         return resolve_rec(fully_qualify_domain(domain), rr_type, 0);
     } catch (const std::exception &e) {
@@ -281,10 +286,12 @@ void Resolver::set_socket_timeout(uint64_t timeout_ms) const {
 }
 
 void Resolver::update_timeout() {
-    auto time_left = timeout_instant - std::chrono::steady_clock::now();
-    auto time_left_ms = std::chrono::duration_cast<std::chrono::duration<uint64_t, std::milli>>(time_left).count();
-    if (time_left_ms <= 0) throw std::runtime_error("Query timed out");
-    if (time_left_ms <= udp_timeout_ms) set_socket_timeout(time_left_ms);
+    auto duration = std::chrono::steady_clock::now() - query_start;
+    auto duration_ms = std::chrono::duration_cast<std::chrono::duration<uint64_t, std::milli>>(duration).count();
+    if (duration_ms >= query_timeout_ms) throw query_timeout_error();
+
+    auto time_left_ms = query_timeout_ms - duration_ms;
+    if (time_left_ms < udp_timeout_ms) set_socket_timeout(time_left_ms);
 }
 
 void Resolver::udp_send(const std::vector<uint8_t> &buffer, struct sockaddr_in address) {
@@ -643,6 +650,9 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 next_zone = get_next_zone(current_safe_zones);
                 if (next_zone == nullptr) return std::nullopt;
                 break;
+            } catch (const query_timeout_error &) {
+                if (verbose) std::println(stderr, "Query timed out");
+                return std::nullopt;
             } catch (const bad_cookie_error &) {
                 if (!nameserver->sent_bad_cookie) {
                     // Retry the same nameserver with the new server cookie once.
