@@ -3,13 +3,13 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <chrono>
-#include <functional>
-#include <memory>
 #include <optional>
+#include <queue>
 #include <random>
 #include <string>
+#include <string_view>
 #include <unordered_map>
-#include <utility>
+#include <variant>
 #include <vector>
 #include "dns.hh"
 
@@ -19,42 +19,7 @@ inline constexpr bool IsInVariant = false;
 template <typename T, typename... Ts>
 inline constexpr bool IsInVariant<T, std::variant<Ts...>> = (std::same_as<T, Ts> || ...);
 
-struct Nameserver {
-    std::variant<in_addr_t, std::string> address;
-    std::optional<uint16_t> udp_payload_size{std::nullopt};
-    bool sent_bad_cookie{false};
-    DNSCookies cookies{};
-
-    Nameserver(in_addr_t address) : address(address) {}
-    Nameserver(const std::string &address) : address(address) {}
-    Nameserver(std::string &&address) : address(std::move(address)) {}
-};
-
-struct Zone {
-    // Do not ask the zone whose nameserver is being resolved.
-    bool is_being_resolved{false};
-    std::string domain;
-    bool enable_edns;
-    bool enable_dnssec;
-    bool enable_cookies;
-    std::vector<std::shared_ptr<Nameserver>> nameservers;
-    std::vector<DS> dss;
-    std::vector<DNSKEY> dnskeys;
-
-    Zone(std::string domain, bool enable_edns, bool enable_dnssec, bool enable_cookies)
-        : domain(std::move(domain)),
-          enable_edns(enable_edns),
-          enable_dnssec(enable_dnssec),
-          enable_cookies(enable_cookies) {}
-
-    void add_nameserver(in_addr_t address) { nameservers.push_back(std::make_shared<Nameserver>(address)); }
-    void add_nameserver(const std::string &domain) { nameservers.push_back(std::make_shared<Nameserver>(domain)); }
-    void add_nameserver(std::string &&domain) {
-        nameservers.push_back(std::make_shared<Nameserver>(std::move(domain)));
-    }
-};
-
-// https://www.cppstories.com/2021/heterogeneous-access-cpp20/
+// https://www.cppstories.com/2021/heterogeneous-access-cpp20
 struct StringHash {
     using is_transparent = void;
 
@@ -62,6 +27,8 @@ struct StringHash {
     size_t operator()(std::string_view str) const { return std::hash<std::string_view>{}(str); }
     size_t operator()(const std::string &str) const { return std::hash<std::string>{}(str); }
 };
+
+struct Zone;
 
 enum class FeatureState { Disable, Enable, Require };
 
@@ -95,7 +62,15 @@ private:
     std::unordered_map<std::string, std::shared_ptr<Zone>, StringHash, std::equal_to<>> zones;
     int fd;
     std::chrono::time_point<std::chrono::steady_clock> timeout_instant;
-    std::shared_ptr<Zone> specified_zone, resolve_config_zone, root_zone;
+    // List of zones to ask when the resolver has no information.
+    std::queue<std::shared_ptr<Zone>> safe_zones;
+
+    std::shared_ptr<Zone> new_zone(const std::string &domain, bool enable_dnssec = true) const;
+    std::shared_ptr<Zone> new_root_zone() const;
+    std::shared_ptr<Zone> load_resolve_config() const;
+    std::shared_ptr<Zone> new_zone_from_nameserver(const std::string &address_or_domain) const;
+    std::shared_ptr<Zone> find_zone(const std::string &domain) const;
+    void zone_disable_dnssec(Zone &zone) const;
 
     void set_socket_timeout(uint64_t timeout) const;
     void update_timeout();
@@ -103,12 +78,8 @@ private:
     void udp_send(const std::vector<uint8_t> &buffer, struct sockaddr_in address);
     void udp_receive(std::vector<uint8_t> &buffer, struct sockaddr_in address);
 
-    std::shared_ptr<Zone> new_zone(const std::string &domain) const;
-    std::shared_ptr<Zone> find_zone(const std::string &domain) const;
-    void zone_disable_dnssec(Zone &zone) const;
-
-    bool verify_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &rrsigs, RRType rr_type,
-                      const Zone &zone) const;
+    bool authenticate_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &rrsigs, RRType rr_type,
+                            const Zone &zone) const;
     std::vector<RR> get_rrset(std::vector<RR> &rrset, RRType rr_type, const Zone &zone, bool authenticate = true) const;
     std::vector<RR> get_rrset(std::vector<RR> &rrset, RRType rr_type, const std::string &domain, const Zone &zone,
                               bool authenticate = true) const;

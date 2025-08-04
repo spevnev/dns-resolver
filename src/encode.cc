@@ -37,8 +37,7 @@ std::string base64_encode(const std::vector<uint8_t> &src) {
     return output;
 }
 
-// Base 32 Encoding with Extended Hex Alphabet.
-std::string base32_encode(const std::vector<uint8_t> &src) {
+std::string base32hex_encode(const std::vector<uint8_t> &src) {
     std::string output;
     output.reserve(((src.size() + 4) / 5) * 8);
 
@@ -98,7 +97,7 @@ std::string base32_encode(const std::vector<uint8_t> &src) {
     return output;
 }
 
-std::string hex_string_encode(const std::vector<uint8_t> &src) {
+std::string hex_encode(const std::vector<uint8_t> &src) {
     std::string output;
     output.reserve(src.size() * 2);
 

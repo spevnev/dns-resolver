@@ -70,8 +70,8 @@ int main(int argc, char **argv) {
             ("edns", "EDNS", cxxopts::value<FeatureState>()->default_value("on"))                    //
             ("dnssec", "DNSSEC", cxxopts::value<FeatureState>()->default_value("on"))                //
             ("cookies", "Cookies", cxxopts::value<FeatureState>()->default_value("on"))              //
-            ("use-root", "Load root nameservers", cxxopts::value<bool>()->default_value("true"))     //
-            ("use-resolv-conf", "Load /etc/resolv.conf", cxxopts::value<bool>()->default_value("true"));
+            ("use-root", "Use root nameservers", cxxopts::value<bool>()->default_value("true"))      //
+            ("use-config", "Use nameservers from /etc/resolv.conf", cxxopts::value<bool>()->default_value("true"));
         options.parse_positional({"domain"});
 
         auto result = options.parse(argc, argv);
@@ -84,7 +84,7 @@ int main(int argc, char **argv) {
             .timeout_ms = result["timeout"].as<uint64_t>() * 1000,
             .nameserver = result["server"].as_optional<std::string>(),
             .use_root_nameservers = result["use-root"].as<bool>(),
-            .use_resolve_config = result["use-resolv-conf"].as<bool>(),
+            .use_resolve_config = result["use-config"].as<bool>(),
             .port = result["port"].as<uint16_t>(),
             .verbose = result["verbose"].as<bool>(),
             .enable_rd = result["rdflag"].as<bool>(),

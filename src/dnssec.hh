@@ -5,6 +5,7 @@
 #include <vector>
 #include "dns.hh"
 
+namespace dnssec {
 int get_ds_digest_size(DigestAlgorithm algorithm);
 uint16_t compute_key_tag(const std::vector<uint8_t> &data);
 
@@ -18,3 +19,4 @@ bool authenticate_no_ds(const std::string &domain, const std::vector<RR> &nsec3_
                         const std::string &zone_domain);
 bool authenticate_no_rrset(RRType rr_type, const std::string &domain, const std::vector<RR> &nsec3_rrset,
                            const std::optional<RR> &nsec_rr, const std::string &zone_domain);
+};  // namespace dnssec

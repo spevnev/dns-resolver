@@ -1,29 +1,53 @@
 #include "resolve.hh"
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#include <algorithm>
 #include <cassert>
-#include <cctype>
-#include <cerrno>
-#include <chrono>
-#include <cstdio>
-#include <exception>
+#include <cstdint>
 #include <fstream>
 #include <memory>
 #include <optional>
 #include <print>
 #include <queue>
-#include <random>
-#include <ratio>
-#include <stdexcept>
 #include <string>
-#include <string_view>
-#include <unordered_map>
+#include <variant>
 #include <vector>
 #include "dns.hh"
 #include "dnssec.hh"
+
+struct Nameserver {
+    std::variant<in_addr_t, std::string> address;
+    std::optional<uint16_t> udp_payload_size{std::nullopt};
+    bool sent_bad_cookie{false};
+    DNSCookies cookies{};
+
+    Nameserver(in_addr_t address) : address(address) {}
+    Nameserver(const std::string &address) : address(address) {}
+    Nameserver(std::string &&address) : address(std::move(address)) {}
+};
+
+struct Zone {
+    // Do not use the zone whose nameserver is being resolved.
+    bool is_being_resolved{false};
+    std::string domain;
+    bool enable_edns;
+    bool enable_dnssec;
+    bool enable_cookies;
+    std::vector<std::shared_ptr<Nameserver>> nameservers;
+    std::vector<DS> dss;
+    std::vector<DNSKEY> dnskeys;
+
+    Zone(std::string domain, bool enable_edns, bool enable_dnssec, bool enable_cookies)
+        : domain(std::move(domain)),
+          enable_edns(enable_edns),
+          enable_dnssec(enable_dnssec),
+          enable_cookies(enable_cookies) {}
+
+    void add_nameserver(in_addr_t address) { nameservers.push_back(std::make_shared<Nameserver>(address)); }
+    void add_nameserver(const std::string &domain) { nameservers.push_back(std::make_shared<Nameserver>(domain)); }
+    void add_nameserver(std::string &&domain) {
+        nameservers.push_back(std::make_shared<Nameserver>(std::move(domain)));
+    }
+};
 
 namespace {
 const constexpr uint64_t MIN_UDP_TIMEOUT_MS = 300;
@@ -59,6 +83,7 @@ public:
     bad_cookie_error() : std::runtime_error("Bad server cookie") {}
 };
 
+// Check domain length, convert it to lowercase and fully qualify.
 std::string fully_qualify_domain(const std::string &domain) {
     std::string fqd;
     fqd.reserve(domain.size() + 1);
@@ -95,41 +120,10 @@ int count_matching_labels(const std::string &a, const std::string &b) {
     return count;
 }
 
-void load_resolve_config(Zone &zone) {
-    std::ifstream is{"/etc/resolv.conf"};
-    in_addr_t ip_address;
-    std::string line;
-    while (std::getline(is, line)) {
-        auto start_idx = line.find_first_not_of(" \t");
-        if (start_idx == std::string::npos) continue;
-
-        if (line.compare(start_idx, 10, "nameserver") != 0) continue;
-        start_idx += 10;
-
-        auto address_start_idx = line.find_first_not_of(" \t", start_idx);
-        if (address_start_idx == std::string::npos) continue;
-
-        auto address_end_idx = line.find_last_not_of(" \t");
-        if (address_end_idx == std::string::npos) continue;
-
-        auto *ip_str = line.data() + address_start_idx;
-        line[address_end_idx + 1] = '\0';
-
-        if (inet_pton(AF_INET, ip_str, &ip_address) == 1) zone.add_nameserver(ip_address);
-    }
-
-    // If no nameserver entries are present, the default is to use the local nameserver.
-    if (zone.nameservers.empty()) {
-        auto result = inet_pton(AF_INET, "127.0.0.1", &ip_address);
-        assert(result == 1);
-        zone.add_nameserver(ip_address);
-    }
-}
-
-std::shared_ptr<Zone> get_safe_zone(std::queue<std::shared_ptr<Zone>> &safe_zones) {
-    while (!safe_zones.empty()) {
-        auto zone = std::move(safe_zones.front());
-        safe_zones.pop();
+std::shared_ptr<Zone> get_next_zone(std::queue<std::shared_ptr<Zone>> &zones) {
+    while (!zones.empty()) {
+        auto zone = std::move(zones.front());
+        zones.pop();
         if (zone != nullptr && !zone->is_being_resolved) return zone;
     }
     return nullptr;
@@ -162,37 +156,13 @@ Resolver::Resolver(ResolverConfig config)
     fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd == -1) throw std::runtime_error("Failed to create UDP socket");
 
-    in_addr_t ip_address;
-    if (config.use_root_nameservers) {
-        root_zone = new_zone(".");
-        for (const auto *ip : ROOT_IP) {
-            if (inet_pton(AF_INET, ip, &ip_address) != 1) throw std::runtime_error("Failed to add root nameservers");
-            root_zone->add_nameserver(ip_address);
-        }
-        if (dnssec != FeatureState::Disable) root_zone->dss.assign_range(ROOT_DS);
+    if (dnssec != FeatureState::Require) {
+        // Only the root zone can be used with DNSSEC because it is the only trust anchor.
+        if (config.nameserver.has_value()) safe_zones.push(new_zone_from_nameserver(config.nameserver.value()));
+        if (config.use_resolve_config) safe_zones.push(load_resolve_config());
     }
-
-    if (config.use_resolve_config && dnssec != FeatureState::Require) {
-        resolve_config_zone = new_zone(".");
-        resolve_config_zone->enable_dnssec = false;
-        load_resolve_config(*resolve_config_zone);
-    }
-
-    if (config.nameserver.has_value() && dnssec != FeatureState::Require) {
-        specified_zone = new_zone(".");
-        specified_zone->enable_dnssec = false;
-
-        const auto &address_or_domain = config.nameserver.value();
-        if (inet_pton(AF_INET, address_or_domain.c_str(), &ip_address) == 1) {
-            specified_zone->add_nameserver(ip_address);
-        } else {
-            specified_zone->add_nameserver(address_or_domain);
-        }
-    }
-
-    if (root_zone == nullptr && resolve_config_zone == nullptr && specified_zone == nullptr) {
-        throw std::runtime_error("No nameserver is specified");
-    }
+    if (config.use_root_nameservers) safe_zones.push(new_root_zone());
+    if (safe_zones.empty()) throw std::runtime_error("No nameserver is specified");
 }
 
 Resolver::~Resolver() { close(fd); }
@@ -214,6 +184,91 @@ std::optional<std::vector<RR>> Resolver::resolve(const std::string &domain, RRTy
     }
 }
 
+std::shared_ptr<Zone> Resolver::new_zone(const std::string &domain, bool enable_dnssec) const {
+    return std::make_shared<Zone>(domain, edns != FeatureState::Disable,
+                                  enable_dnssec && dnssec != FeatureState::Disable, cookies != FeatureState::Disable);
+}
+
+std::shared_ptr<Zone> Resolver::new_root_zone() const {
+    auto zone = new_zone(".");
+    in_addr_t ip_address;
+    for (const auto *ip : ROOT_IP) {
+        if (inet_pton(AF_INET, ip, &ip_address) != 1) throw std::runtime_error("Failed to add root nameservers");
+        zone->add_nameserver(ip_address);
+    }
+    zone->dss.assign_range(ROOT_DS);
+    return zone;
+}
+
+std::shared_ptr<Zone> Resolver::load_resolve_config() const {
+    auto zone = new_zone(".", false);
+    std::ifstream is{"/etc/resolv.conf"};
+    in_addr_t ip_address;
+    std::string line;
+    while (std::getline(is, line)) {
+        auto start_idx = line.find_first_not_of(" \t");
+        if (start_idx == std::string::npos) continue;
+
+        if (line.compare(start_idx, 10, "nameserver") != 0) continue;
+        start_idx += 10;
+
+        auto address_start_idx = line.find_first_not_of(" \t", start_idx);
+        if (address_start_idx == std::string::npos) continue;
+
+        auto address_end_idx = line.find_last_not_of(" \t");
+        if (address_end_idx == std::string::npos) continue;
+
+        auto *ip_str = line.data() + address_start_idx;
+        line[address_end_idx + 1] = '\0';
+
+        if (inet_pton(AF_INET, ip_str, &ip_address) == 1) zone->add_nameserver(ip_address);
+    }
+
+    // If no nameserver entries are present, the default is to use the local nameserver.
+    if (zone->nameservers.empty()) {
+        auto result = inet_pton(AF_INET, "127.0.0.1", &ip_address);
+        assert(result == 1);
+        zone->add_nameserver(ip_address);
+    }
+    return zone;
+}
+
+std::shared_ptr<Zone> Resolver::new_zone_from_nameserver(const std::string &address_or_domain) const {
+    auto zone = new_zone(".", false);
+    in_addr_t ip_address;
+    if (inet_pton(AF_INET, address_or_domain.c_str(), &ip_address) == 1) {
+        zone->add_nameserver(ip_address);
+    } else {
+        zone->add_nameserver(address_or_domain);
+    }
+    return zone;
+}
+
+std::shared_ptr<Zone> Resolver::find_zone(const std::string &domain) const {
+    std::string_view current{domain};
+    for (;;) {
+        auto zone_it = zones.find(current);
+        if (zone_it != zones.cend()) {
+            const auto &zone = zone_it->second;
+            if (!zone->is_being_resolved) return zone;
+        }
+
+        auto next_label_index = current.find('.');
+        assert(next_label_index != std::string::npos);
+        if (next_label_index == current.size() - 1) return nullptr;
+        current.remove_prefix(next_label_index + 1);
+    }
+}
+
+void Resolver::zone_disable_dnssec(Zone &zone) const {
+    // If there is no secure delegation, the zone is unsigned and does not support DNSSEC.
+    // Don't throw because disabling DNSSEC is the only way to access the zone.
+    if (!zone.dss.empty() && dnssec == FeatureState::Require) {
+        throw std::runtime_error("Nameserver does not support DNSSEC");
+    }
+    zone.enable_dnssec = false;
+}
+
 void Resolver::set_socket_timeout(uint64_t timeout_ms) const {
     struct timeval tv;
     tv.tv_sec = timeout_ms / 1000;
@@ -221,14 +276,14 @@ void Resolver::set_socket_timeout(uint64_t timeout_ms) const {
 
     if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0 ||  //
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) {
-        throw std::runtime_error{"Failed to set receive/send timeout"};
+        throw std::runtime_error("Failed to set receive/send timeout");
     }
 }
 
 void Resolver::update_timeout() {
     auto time_left = timeout_instant - std::chrono::steady_clock::now();
     auto time_left_ms = std::chrono::duration_cast<std::chrono::duration<uint64_t, std::milli>>(time_left).count();
-    if (time_left_ms <= 0) throw std::runtime_error{"Query timed out"};
+    if (time_left_ms <= 0) throw std::runtime_error("Query timed out");
     if (time_left_ms <= udp_timeout_ms) set_socket_timeout(time_left_ms);
 }
 
@@ -258,51 +313,21 @@ void Resolver::udp_receive(std::vector<uint8_t> &buffer, struct sockaddr_in requ
     buffer.resize(result);
 }
 
-std::shared_ptr<Zone> Resolver::new_zone(const std::string &domain) const {
-    return std::make_shared<Zone>(domain, edns != FeatureState::Disable, dnssec != FeatureState::Disable,
-                                  cookies != FeatureState::Disable);
-}
-
-std::shared_ptr<Zone> Resolver::find_zone(const std::string &domain) const {
-    std::string_view current{domain};
-    for (;;) {
-        auto zone_it = zones.find(current);
-        if (zone_it != zones.cend()) {
-            const auto &zone = zone_it->second;
-            if (!zone->is_being_resolved) return zone;
-        }
-
-        auto next_label_index = current.find('.');
-        assert(next_label_index != std::string::npos);
-        if (next_label_index == current.size() - 1) return nullptr;
-        current.remove_prefix(next_label_index + 1);
-    }
-}
-
-void Resolver::zone_disable_dnssec(Zone &zone) const {
-    // If there is no secure delegation, the zone is unsigned and does not support DNSSEC.
-    // Don't throw because disabling DNSSEC is the only way to access the zone.
-    if (!zone.dss.empty() && dnssec == FeatureState::Require) {
-        throw std::runtime_error("Nameserver does not support DNSSEC");
-    }
-    zone.enable_dnssec = false;
-}
-
-bool Resolver::verify_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &rrsigs, RRType rr_type,
-                            const Zone &zone) const {
+bool Resolver::authenticate_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &rrsigs, RRType rr_type,
+                                  const Zone &zone) const {
     if (rrset.empty()) return true;
 
     if (rr_type != RRType::DNSKEY) {
-        return authenticate_rrset(rrset, rrsigs, zone.dnskeys, zone.domain);
+        return dnssec::authenticate_rrset(rrset, rrsigs, zone.dnskeys, zone.domain);
     }
 
     if (!zone.dss.empty()) {
-        return authenticate_delegation(rrset, zone.dss, rrsigs, zone.domain);
+        return dnssec::authenticate_delegation(rrset, zone.dss, rrsigs, zone.domain);
     }
 
     // There is no secure delegation, so just verify that the RRSIG was signed with one of these DNSKEYs.
     auto dnskeys = rrset_to_data<DNSKEY>(rrset);
-    return authenticate_rrset(rrset, rrsigs, dnskeys, zone.domain);
+    return dnssec::authenticate_rrset(rrset, rrsigs, dnskeys, zone.domain);
 }
 
 std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, const Zone &zone, bool authenticate) const {
@@ -316,6 +341,7 @@ std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, cons
     std::vector<RRSIG> current_rrsigs;
     std::ranges::sort(rrset, {}, &RR::domain);
     for (auto it = rrset.begin(); it != rrset.end(); ++it) {
+        // Check the condition before the iterator gets invalidated.
         auto is_end_of_group = it + 1 == rrset.end() || it->domain != (it + 1)->domain;
 
         if (it->type == rr_type) {
@@ -330,7 +356,8 @@ std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, cons
         }
 
         if (is_end_of_group) {
-            if (authenticate && zone.enable_dnssec && !verify_rrset(current_rrset, current_rrsigs, rr_type, zone)) {
+            if (authenticate && zone.enable_dnssec
+                && !authenticate_rrset(current_rrset, current_rrsigs, rr_type, zone)) {
                 throw std::runtime_error("Failed to authenticate RRset");
             }
             result.append_range(std::move(current_rrset));
@@ -365,7 +392,7 @@ std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, cons
         }
     }
 
-    if (authenticate && zone.enable_dnssec && !verify_rrset(result, rrsigs, rr_type, zone)) {
+    if (authenticate && zone.enable_dnssec && !authenticate_rrset(result, rrsigs, rr_type, zone)) {
         throw std::runtime_error("Failed to authenticate RRset");
     }
 
@@ -378,7 +405,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
 
     std::vector<uint8_t> buffer;
     std::string sname{domain};
-    std::queue<std::shared_ptr<Zone>> safe_zones({specified_zone, resolve_config_zone, root_zone});
+    std::queue<std::shared_ptr<Zone>> current_safe_zones{safe_zones};
 
     struct sockaddr_in address;
     address.sin_family = AF_INET;
@@ -390,7 +417,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
         next_zone = std::move(search_zone);
     } else {
         next_zone = find_zone(sname);
-        if (next_zone == nullptr) next_zone = get_safe_zone(safe_zones);
+        if (next_zone == nullptr) next_zone = get_next_zone(current_safe_zones);
     }
 
     while (next_zone != nullptr) {
@@ -399,9 +426,9 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
 
         // Get zone's DNSKEYs.
         if (zone->enable_dnssec && zone->dnskeys.empty() && rr_type != RRType::DNSKEY) {
-            auto opt_dnskey_rrset = resolve_rec(zone->domain, RRType::DNSKEY, depth + 1, zone);
-            if (opt_dnskey_rrset.has_value() && !opt_dnskey_rrset->empty()) {
-                zone->dnskeys = rrset_to_data<DNSKEY>(std::move(opt_dnskey_rrset.value()));
+            auto dnskey_rrset = resolve_rec(zone->domain, RRType::DNSKEY, depth + 1, zone);
+            if (dnskey_rrset.has_value() && !dnskey_rrset->empty()) {
+                zone->dnskeys = rrset_to_data<DNSKEY>(std::move(dnskey_rrset.value()));
             } else {
                 zone_disable_dnssec(*zone);
             }
@@ -414,9 +441,11 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
             try {
                 // If nameserver has only the domain, get the address.
                 if (std::holds_alternative<std::string>(nameserver->address)) {
+                    const auto &nameserver_domain = std::get<std::string>(nameserver->address);
+
                     // Do not use this zone while it is being resolver to avoid infinite recursion.
                     zone->is_being_resolved = true;
-                    auto opt_a_rrset = resolve_rec(std::get<std::string>(nameserver->address), RRType::A, depth + 1);
+                    auto opt_a_rrset = resolve_rec(nameserver_domain, RRType::A, depth + 1);
                     zone->is_being_resolved = false;
 
                     if (!opt_a_rrset.has_value() || opt_a_rrset->empty()) {
@@ -466,18 +495,17 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
 
                         if (!opt.dnssec_ok) zone_disable_dnssec(*zone);
 
-                        // Check and save DNS cookies.
                         if (zone->enable_cookies) {
-                            if (!opt.cookies.has_value()) {
-                                if (cookies == FeatureState::Require) {
-                                    throw std::runtime_error("Nameserver does not support Cookies");
-                                }
-                                zone->enable_cookies = false;
-                            } else {
+                            if (opt.cookies.has_value()) {
                                 if (opt.cookies->client != nameserver->cookies.client) {
                                     throw std::runtime_error("Wrong client cookie");
                                 }
                                 nameserver->cookies.server = std::move(opt.cookies->server);
+                            } else {
+                                if (cookies == FeatureState::Require) {
+                                    throw std::runtime_error("Nameserver does not support Cookies");
+                                }
+                                zone->enable_cookies = false;
                             }
                         }
                     } else {
@@ -504,11 +532,11 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     case RCode::Success:     break;
                     case RCode::FormatError: throw std::runtime_error("Nameserver is unable to interpret query"); break;
                     case RCode::ServerError: throw std::runtime_error("Nameserver error"); break;
-                    case RCode::NameError:   {
+                    case RCode::NameError:
                         if (zone->enable_dnssec) {
                             auto nsec3_rrset = get_rrset(response.authority, RRType::NSEC3, *zone);
                             auto nsec_rrset = get_rrset(response.authority, RRType::NSEC, *zone);
-                            if (authenticate_name_error(sname, nsec3_rrset, nsec_rrset, zone->domain)) {
+                            if (dnssec::authenticate_name_error(sname, nsec3_rrset, nsec_rrset, zone->domain)) {
                                 return std::vector<RR>{};
                             }
                             throw std::runtime_error("Failed to authenticate the denial of existence");
@@ -518,7 +546,6 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                             throw std::runtime_error("Non-authoritative nameserver cannot deny the existence");
                         }
                         return std::vector<RR>{};
-                    }
                     case RCode::NotImplemented:
                         throw std::runtime_error("Nameserver does not support this query");
                         break;
@@ -550,19 +577,19 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 // Look for the referral.
                 std::shared_ptr<Zone> referral_zone = nullptr;
                 auto ns_rrset = get_rrset(response.authority, RRType::NS, *zone, false);
-                for (auto &rr : ns_rrset) {
+                for (auto &ns_rr : ns_rrset) {
                     if (referral_zone == nullptr) {
-                        if (count_matching_labels(sname, rr.domain) <= count_matching_labels(sname, zone->domain)) {
+                        if (count_matching_labels(sname, ns_rr.domain) <= count_matching_labels(sname, zone->domain)) {
                             throw std::runtime_error("Referral must be closer to the search name");
                         }
-                        referral_zone = new_zone(rr.domain);
-                    } else if (rr.domain != referral_zone->domain) {
+                        referral_zone = new_zone(ns_rr.domain);
+                    } else if (ns_rr.domain != referral_zone->domain) {
                         throw std::runtime_error(std::format("Authority contains multiple referrals: {} and {}",
-                                                             rr.domain, referral_zone->domain));
+                                                             ns_rr.domain, referral_zone->domain));
                     }
 
                     // Check if the additional section has nameservers' addresses.
-                    auto &ns_domain = std::get<NS>(rr.data).domain;
+                    auto &ns_domain = std::get<NS>(ns_rr.data).domain;
                     auto a_rrset = rrset_to_data<A>(get_rrset(response.additional, RRType::A, ns_domain, *zone, false));
                     if (a_rrset.empty()) {
                         referral_zone->add_nameserver(std::move(ns_domain));
@@ -581,7 +608,8 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                             auto nsec3_rrset = get_rrset(response.authority, RRType::NSEC3, *zone);
                             auto nsec_rrset = get_rrset(response.authority, RRType::NSEC, referral_zone->domain, *zone);
                             auto nsec_rr = nsec_rrset.empty() ? std::nullopt : std::optional<RR>{nsec_rrset[0]};
-                            if (!authenticate_no_ds(referral_zone->domain, nsec3_rrset, nsec_rr, zone->domain)) {
+                            if (!dnssec::authenticate_no_ds(referral_zone->domain, nsec3_rrset, nsec_rr,
+                                                            zone->domain)) {
                                 throw std::runtime_error("Failed to authenticate the denial of existence");
                             }
                         }
@@ -593,26 +621,26 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 }
 
                 if (followed_cname) {
-                    // There is no referral and CNAME points outside of this zone, restart the search.
+                    // There is no referral and no answer, follow the CNAME.
                     return resolve_rec(sname, rr_type, depth);
                 }
 
-                // Failed to find DNSKEYs, end the search.
-                if (rr_type == RRType::DNSKEY && zone->dnskeys.empty()) return std::nullopt;
-
                 // Look for the authenticated denial of existence.
-                if (zone->enable_dnssec) {
+                if (zone->enable_dnssec && rr_type != RRType::DNSKEY) {
                     auto nsec3_rrset = get_rrset(response.authority, RRType::NSEC3, *zone);
                     auto nsec_rrset = get_rrset(response.authority, RRType::NSEC, sname, *zone);
                     auto nsec_rr = nsec_rrset.empty() ? std::nullopt : std::optional<RR>{nsec_rrset[0]};
-                    if (!authenticate_no_rrset(rr_type, sname, nsec3_rrset, nsec_rr, zone->domain)) {
+                    if (!dnssec::authenticate_no_rrset(rr_type, sname, nsec3_rrset, nsec_rr, zone->domain)) {
                         throw std::runtime_error("Failed to authenticate the denial of existence");
                     }
                     return std::vector<RR>{};
                 }
 
-                // No referral and no answer, try querying the safe zones if there are any left.
-                next_zone = get_safe_zone(safe_zones);
+                // No referral and no answer from an authoritative nameserver indicate No Data.
+                if (response.is_authoritative) return std::vector<RR>{};
+
+                // If the nameserver isn't authoritative, try one of the safe zones.
+                next_zone = get_next_zone(current_safe_zones);
                 if (next_zone == nullptr) return std::nullopt;
                 break;
             } catch (const bad_cookie_error &) {

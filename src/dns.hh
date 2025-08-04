@@ -162,7 +162,7 @@ struct RRSIG {
     uint16_t key_tag;
     std::string signer_name;
     std::vector<uint8_t> signature;
-    // Data does not include the signature since it is only used to verify it.
+    // Data does not include the signature since it is only used to authenticate it.
     std::vector<uint8_t> data;
 };
 
@@ -270,7 +270,7 @@ public:
             case RRType::DS: {
                 const auto &ds = std::get<DS>(rr.data);
                 std::format_to(out, "{} {} {} {}", ds.key_tag, std::to_underlying(ds.signing_algorithm),
-                               std::to_underlying(ds.digest_algorithm), hex_string_encode(ds.digest));
+                               std::to_underlying(ds.digest_algorithm), hex_encode(ds.digest));
             } break;
             case RRType::RRSIG: {
                 const auto &rrsig = std::get<RRSIG>(rr.data);
@@ -293,8 +293,8 @@ public:
             case RRType::NSEC3: {
                 const auto &nsec3 = std::get<NSEC3>(rr.data);
                 std::format_to(out, "{} {} {} {} {} (", std::to_underlying(nsec3.algorithm), nsec3.flags,
-                               nsec3.iterations, nsec3.salt.empty() ? "-" : hex_string_encode(nsec3.salt),
-                               base32_encode(nsec3.next_domain_hash));
+                               nsec3.iterations, nsec3.salt.empty() ? "-" : hex_encode(nsec3.salt),
+                               base32hex_encode(nsec3.next_domain_hash));
                 print_types(out, nsec3.types);
                 std::format_to(out, ")");
             } break;

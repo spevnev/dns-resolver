@@ -21,14 +21,6 @@
 #include "write.hh"
 
 namespace {
-struct RRWithData {
-    std::reference_wrapper<const RR> rr;
-    std::vector<std::string_view> labels;
-    std::vector<uint8_t> data;
-
-    RRWithData(const RR &rr, std::vector<std::string_view> &&labels) : rr(rr), labels(labels) {}
-};
-
 using EVP_PKEY_unique_ptr = std::unique_ptr<EVP_PKEY, decltype([](auto *pkey) { EVP_PKEY_free(pkey); })>;
 using BIGNUM_unique_ptr = std::unique_ptr<BIGNUM, decltype([](auto *bn) { BN_free(bn); })>;
 using OSSL_PARAM_BLD_unique_ptr
@@ -105,7 +97,7 @@ EVP_PKEY_unique_ptr load_ecdsa_key(const std::vector<uint8_t> &dnskey, const std
 }
 
 EVP_PKEY_unique_ptr load_eddsa_key(const std::vector<uint8_t> &dnskey, int type) {
-    auto *pkey = EVP_PKEY_new_raw_public_key(type, NULL, dnskey.data(), dnskey.size());
+    auto *pkey = EVP_PKEY_new_raw_public_key(type, nullptr, dnskey.data(), dnskey.size());
     if (pkey == nullptr) throw std::runtime_error("Failed to load EdDSA key");
     return EVP_PKEY_unique_ptr{pkey};
 }
@@ -214,6 +206,14 @@ std::vector<std::string_view> domain_to_labels(const std::string_view &domain) {
     }
     return labels;
 }
+
+struct RRWithData {
+    std::reference_wrapper<const RR> rr;
+    std::vector<std::string_view> labels;
+    std::vector<uint8_t> data;
+
+    RRWithData(const RR &rr, std::vector<std::string_view> &&labels) : rr(rr), labels(labels) {}
+};
 
 std::vector<RRWithData> add_data_to_rrset(const std::vector<RR> &rrset) {
     std::vector<RRWithData> result;
@@ -359,10 +359,10 @@ int compare_domains(const std::vector<std::string_view> &a, const std::vector<st
     return 0;
 }
 
-bool is_domain_between(const std::string_view &domain, const std::string_view &before, const std::string_view &after) {
+bool is_domain_between(const std::string &domain, const std::string &before, const std::string &after) {
+    auto domain_labels = domain_to_labels(domain);
     auto before_labels = domain_to_labels(before);
     auto after_labels = domain_to_labels(after);
-    auto domain_labels = domain_to_labels(domain);
     return compare_domains(before_labels, domain_labels) < 0 && compare_domains(domain_labels, after_labels) < 0;
 }
 
@@ -394,7 +394,7 @@ std::string get_nsec3_domain(const NSEC3 &nsec3, const std::string_view &domain,
         }
     }
 
-    return base32_encode(digest) + "." + zone_domain;
+    return base32hex_encode(digest) + "." + zone_domain;
 }
 
 std::optional<NSEC3> find_covering_nsec3(const std::vector<RR> &nsec3_rrset, const std::string_view &domain,
@@ -406,7 +406,7 @@ std::optional<NSEC3> find_covering_nsec3(const std::vector<RR> &nsec3_rrset, con
         auto covered_domain = get_nsec3_domain(nsec3, domain, zone_domain);
         for (const auto &nsec3_rr : nsec3_rrset) {
             const auto &nsec3 = std::get<NSEC3>(nsec3_rr.data);
-            auto next_domain = base32_encode(nsec3.next_domain_hash) + "." + zone_domain;
+            auto next_domain = base32hex_encode(nsec3.next_domain_hash) + "." + zone_domain;
             if (is_domain_between(covered_domain, nsec3_rr.domain, next_domain)) return std::get<NSEC3>(nsec3_rr.data);
         }
     } catch (...) {
@@ -463,6 +463,7 @@ std::optional<EncloserProof> verify_closest_encloser_proof(const std::vector<RR>
 }
 }  // namespace
 
+namespace dnssec {
 int get_ds_digest_size(DigestAlgorithm algorithm) {
     auto digest_size = EVP_MD_get_size(get_ds_digest_algorithm(algorithm));
     if (digest_size <= 0) throw std::runtime_error("Failed to get digest size");
@@ -550,10 +551,10 @@ bool authenticate_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &
 
 bool authenticate_delegation(const std::vector<RR> &dnskey_rrset, const std::vector<DS> &dss,
                              const std::vector<RRSIG> &rrsigs, const std::string &zone_domain) {
-    if (dnskey_rrset.empty() || dss.empty()) return {};
+    if (dnskey_rrset.empty() || dss.empty()) return false;
 
     EVP_MD_CTX_unique_ptr ctx{EVP_MD_CTX_new()};
-    if (ctx == nullptr) return {};
+    if (ctx == nullptr) return false;
 
     std::vector<uint8_t> canonical_domain;
     std::vector<uint8_t> digest;
@@ -565,7 +566,9 @@ bool authenticate_delegation(const std::vector<RR> &dnskey_rrset, const std::vec
             if (digest_size <= 0) continue;
 
             for (const auto &dnskey_rr : dnskey_rrset) {
+                if (dnskey_rr.type != RRType::DNSKEY) return false;
                 const auto &dnskey = std::get<DNSKEY>(dnskey_rr.data);
+
                 if (dnskey.key_tag != ds.key_tag) continue;
 
                 canonical_domain.clear();
@@ -602,9 +605,10 @@ bool authenticate_name_error(const std::string &domain, const std::vector<RR> &n
         return find_covering_nsec3(nsec3_rrset, wildcard_domain, zone_domain).has_value();
     }
 
-    for (const auto &rr : nsec_rrset) {
-        const auto &nsec = std::get<NSEC>(rr.data);
-        if (is_domain_between(domain, rr.domain, nsec.next_domain)) return true;
+    for (const auto &nsec_rr : nsec_rrset) {
+        if (nsec_rr.type != RRType::NSEC) return false;
+        const auto &nsec = std::get<NSEC>(nsec_rr.data);
+        if (is_domain_between(domain, nsec_rr.domain, nsec.next_domain)) return true;
     }
 
     return false;
@@ -625,9 +629,9 @@ bool authenticate_no_ds(const std::string &domain, const std::vector<RR> &nsec3_
         return encloser_proof.has_value() && encloser_proof->next_closer_opt_out;
     }
 
-    if (!nsec_rr.has_value()) return false;
-
+    if (!nsec_rr.has_value() || nsec_rr->type != RRType::NSEC) return false;
     const auto &nsec = std::get<NSEC>(nsec_rr->data);
+
     if (nsec.types.contains(RRType::DS) || nsec.types.contains(RRType::CNAME)) return false;
 
     return true;
@@ -642,9 +646,9 @@ bool authenticate_no_rrset(RRType rr_type, const std::string &domain, const std:
         return true;
     }
 
-    if (!nsec_rr.has_value()) return false;
-
+    if (!nsec_rr.has_value() || nsec_rr->type != RRType::NSEC) return false;
     const auto &nsec = std::get<NSEC>(nsec_rr->data);
-    if (nsec.types.contains(rr_type) || nsec.types.contains(RRType::CNAME)) return false;
-    return true;
+
+    return !nsec.types.contains(rr_type) && !nsec.types.contains(RRType::CNAME);
 }
+};  // namespace dnssec

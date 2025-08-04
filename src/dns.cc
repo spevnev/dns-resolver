@@ -19,7 +19,7 @@ template <std::integral T>
 T random_int() {
     T result;
     if (RAND_bytes(reinterpret_cast<unsigned char *>(&result), sizeof(result)) != 1) {
-        throw std::runtime_error{"Failed to generate random bytes"};
+        throw std::runtime_error("Failed to generate random bytes");
     }
     return result;
 }
@@ -79,40 +79,38 @@ public:
 
         // Read response header.
         auto id = read_u16();
-        if (id != request_id) throw std::runtime_error("Wrong response ID");
-
         auto flags = read_u16();
         bool is_response = (flags >> 15) & 1;
+        auto opcode = static_cast<OpCode>((flags >> 11) & 0b1111);
         response.is_authoritative = (flags >> 10) & 1;
         bool is_truncated = (flags >> 9) & 1;
-        auto opcode = static_cast<OpCode>((flags >> 11) & 0b1111);
         response.rcode = static_cast<RCode>(flags & 0b1111);
-
-        if (!is_response) throw std::runtime_error("Response is a query");
-        if (is_truncated) throw std::runtime_error("Response is truncated");
-        if (opcode != OpCode::Query) throw std::runtime_error("Response has wrong opcode");
-
         auto question_count = read_u16();
-        if (question_count != 1) throw std::runtime_error("Wrong question count");
         auto answer_count = read_u16();
         auto authority_count = read_u16();
         auto additional_count = read_u16();
+
+        // Validate response header.
+        if (id != request_id) throw std::runtime_error("Wrong response ID");
+        if (!is_response) throw std::runtime_error("Response is a query");
+        if (opcode != OpCode::Query) throw std::runtime_error("Response has wrong opcode");
+        if (is_truncated) throw std::runtime_error("Response is truncated");
+        if (question_count != 1) throw std::runtime_error("Wrong question count");
 
         // Validate question.
         if (read_domain() != request_domain) throw std::runtime_error("Wrong question domain");
         if (read_u16<RRType>() != request_rr_type) throw std::runtime_error("Wrong question type");
         if (read_u16<DNSClass>() != DNSClass::Internet) throw std::runtime_error("Unknown DNS class");
 
+        // Read the answer.
         response.answers.reserve(answer_count);
         for (uint16_t i = 0; i < answer_count; i++) response.answers.push_back(read_rr());
-
         response.authority.reserve(authority_count);
         for (uint16_t i = 0; i < authority_count; i++) response.authority.push_back(read_rr());
-
         response.additional.reserve(additional_count);
         for (uint16_t i = 0; i < additional_count; i++) response.additional.push_back(read_rr());
 
-        if (offset != buffer.size()) throw std::runtime_error("Response is too long");
+        if (offset != buffer.size()) throw std::runtime_error("Failed to parse the response");
         return response;
     }
 
@@ -193,7 +191,7 @@ private:
         std::string domain;
         read_domain_rec(allow_compression, domain);
         // Handle root domain.
-        if (domain.empty()) domain.push_back('.');
+        if (domain.empty()) return ".";
         if (domain.size() > MAX_DOMAIN_LENGTH) throw std::runtime_error("Domain is too long");
         return domain;
     }
@@ -280,9 +278,9 @@ private:
         ds.key_tag = read_u16();
         ds.signing_algorithm = read_u8<SigningAlgorithm>();
         ds.digest_algorithm = read_u8<DigestAlgorithm>();
-        read(get_ds_digest_size(ds.digest_algorithm), ds.digest);
+        read(dnssec::get_ds_digest_size(ds.digest_algorithm), ds.digest);
 
-        // Save data to verify the RRSIG later.
+        // Save data to authenticate the RRSIG later.
         ResponseReader data_reader{buffer, data_offset};
         data_reader.read(data_length, ds.data);
 
@@ -306,7 +304,7 @@ private:
         auto signature_length = data_length - (offset - data_offset);
         read(signature_length, rrsig.signature);
 
-        // Save data without signature to verify it later.
+        // Save data without signature to authenticate it later.
         ResponseReader data_reader{buffer, data_offset};
         data_reader.read(data_length - signature_length, rrsig.data);
 
@@ -345,7 +343,7 @@ private:
         auto domain_size = offset - data_offset;
         nsec.types = read_rr_type_bitmap(data_length - domain_size);
 
-        // Save data to verify the RRSIG later.
+        // Save data to authenticate the RRSIG later.
         ResponseReader data_reader{buffer, data_offset};
         data_reader.read(data_length, nsec.data);
 
@@ -369,10 +367,10 @@ private:
         auto key_size = data_length - 4;
         read(key_size, dnskey.key);
 
-        // Save data to verify the RRSIG later.
+        // Save data to authenticate the RRSIG later.
         ResponseReader data_reader{buffer, data_offset};
         data_reader.read(data_length, dnskey.data);
-        dnskey.key_tag = compute_key_tag(dnskey.data);
+        dnskey.key_tag = dnssec::compute_key_tag(dnskey.data);
 
         return dnskey;
     }
@@ -394,7 +392,7 @@ private:
         auto nsec3_data_length = offset - data_offset;
         nsec3.types = read_rr_type_bitmap(data_length - nsec3_data_length);
 
-        // Save data to verify the RRSIG later.
+        // Save data to authenticate the RRSIG later.
         ResponseReader data_reader{buffer, data_offset};
         data_reader.read(data_length, nsec3.data);
 
