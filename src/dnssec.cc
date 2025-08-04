@@ -502,6 +502,7 @@ bool authenticate_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &
         EVP_MD_CTX_unique_ptr ctx{EVP_MD_CTX_new()};
         if (ctx == nullptr) return false;
 
+        const auto &rrset_labels = rrs_with_data[0].labels;
         auto time_now = time(nullptr);
         std::vector<uint8_t> canonical_domain;
         for (const auto &rrsig : rrsigs) {
@@ -509,7 +510,19 @@ bool authenticate_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &
                 if (rrsig.type_covered != rrset[0].type) continue;
                 if (!(rrsig.inception_time <= time_now && time_now <= rrsig.expiration_time)) continue;
                 if (rrsig.signer_name != zone_domain) continue;
-                if (rrsig.labels > rrs_with_data[0].labels.size()) continue;
+                if (rrsig.labels > rrset_labels.size()) continue;
+
+                canonical_domain.clear();
+                if (rrsig.labels < rrset_labels.size()) {
+                    std::string domain = "*.";
+                    for (size_t i = 0; i < rrsig.labels; i++) {
+                        domain += rrset_labels[rrsig.labels - 1 - i];
+                        domain.push_back('.');
+                    }
+                    write_domain(canonical_domain, domain);
+                } else {
+                    write_domain(canonical_domain, rrset[0].domain);
+                }
 
                 auto signature = load_signature(rrsig);
                 for (const auto &dnskey : dnskeys) {
@@ -520,13 +533,8 @@ bool authenticate_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &
                         auto digest = new_rrsig_digest(ctx.get(), dnskey);
                         digest->update(rrsig.data);
                         for (const auto &rr_with_data : rrs_with_data) {
-                            const RR &rr = rr_with_data.rr;
-
-                            canonical_domain.clear();
-                            write_domain(canonical_domain, rr.domain);
-
                             digest->update(canonical_domain);
-                            digest->update(rr.type);
+                            digest->update(rr_with_data.rr.get().type);
                             digest->update(DNSClass::Internet);
                             digest->update(rrsig.original_ttl);
                             digest->update(static_cast<uint16_t>(rr_with_data.data.size()));
