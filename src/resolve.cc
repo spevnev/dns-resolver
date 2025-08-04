@@ -615,10 +615,12 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                             auto nsec3_rrset = get_rrset(response.authority, RRType::NSEC3, *zone);
                             auto nsec_rrset = get_rrset(response.authority, RRType::NSEC, referral_zone->domain, *zone);
                             auto nsec_rr = nsec_rrset.empty() ? std::nullopt : std::optional<RR>{nsec_rrset[0]};
-                            if (!dnssec::authenticate_no_ds(referral_zone->domain, nsec3_rrset, nsec_rr,
-                                                            zone->domain)) {
+                            auto result
+                                = dnssec::authenticate_no_ds(referral_zone->domain, nsec3_rrset, nsec_rr, zone->domain);
+                            if (!result.has_value()) {
                                 throw std::runtime_error("Failed to authenticate the denial of existence");
                             }
+                            referral_zone->enable_dnssec = result.value();
                         }
                     }
 
