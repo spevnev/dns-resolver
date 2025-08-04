@@ -125,21 +125,12 @@ int count_matching_labels(const std::string &a, const std::string &b) {
     return count;
 }
 
-std::shared_ptr<Zone> get_next_zone(std::queue<std::shared_ptr<Zone>> &zones) {
-    while (!zones.empty()) {
-        auto zone = std::move(zones.front());
-        zones.pop();
-        if (zone != nullptr && !zone->is_being_resolved) return zone;
-    }
-    return nullptr;
-}
-
 bool address_equals(struct sockaddr_in a, struct sockaddr_in b) {
     return a.sin_port == b.sin_port && a.sin_addr.s_addr == b.sin_addr.s_addr;
 }
 }  // namespace
 
-Resolver::Resolver(ResolverConfig config)
+Resolver::Resolver(const ResolverConfig &config)
     : query_timeout_ms(std::max(config.timeout_ms, MIN_QUERY_TIMEOUT_MS)),
       udp_timeout_ms(query_timeout_ms / 3),
       port(config.port),
@@ -148,6 +139,7 @@ Resolver::Resolver(ResolverConfig config)
       edns(config.edns),
       dnssec(config.dnssec),
       cookies(config.cookies),
+      safety_belt_zones(init_safety_belt(config)),
       rng(std::chrono::system_clock::now().time_since_epoch().count()) {
     if (edns == FeatureState::Disable) {
         if (dnssec == FeatureState::Require) throw std::runtime_error("DNSSEC requires EDNS to be enabled");
@@ -160,14 +152,6 @@ Resolver::Resolver(ResolverConfig config)
 
     fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd == -1) throw std::runtime_error("Failed to create UDP socket");
-
-    if (dnssec != FeatureState::Require) {
-        // Only the root zone can be used with DNSSEC because it is the only trust anchor.
-        if (config.nameserver.has_value()) safe_zones.push(new_zone_from_nameserver(config.nameserver.value()));
-        if (config.use_resolve_config) safe_zones.push(load_resolve_config());
-    }
-    if (config.use_root_nameservers) safe_zones.push(new_root_zone());
-    if (safe_zones.empty()) throw std::runtime_error("No nameserver is specified");
 }
 
 Resolver::~Resolver() { close(fd); }
@@ -187,6 +171,29 @@ std::optional<std::vector<RR>> Resolver::resolve(const std::string &domain, RRTy
         if (verbose) std::println(stderr, "Failed to resolve the domain: {}", e.what());
         return std::nullopt;
     }
+}
+
+std::shared_ptr<Zone> Resolver::SafetyBelt::next() {
+    while (!zones.empty()) {
+        auto zone = std::move(zones.front());
+        zones.pop();
+        if (zone != nullptr && !zone->is_being_resolved) return zone;
+    }
+    return nullptr;
+}
+
+std::queue<std::shared_ptr<Zone>> Resolver::init_safety_belt(const ResolverConfig &config) const {
+    std::queue<std::shared_ptr<Zone>> zones;
+
+    if (dnssec != FeatureState::Require) {
+        // Only the root zone can be used with DNSSEC because it is the only trust anchor.
+        if (config.nameserver.has_value()) zones.push(new_zone_from_nameserver(config.nameserver.value()));
+        if (config.use_resolve_config) zones.push(load_resolve_config());
+    }
+    if (config.use_root_nameservers) zones.push(new_root_zone());
+
+    if (zones.empty()) throw std::runtime_error("No nameserver is specified");
+    return zones;
 }
 
 std::shared_ptr<Zone> Resolver::new_zone(const std::string &domain, bool enable_dnssec) const {
@@ -286,11 +293,12 @@ void Resolver::set_socket_timeout(uint64_t timeout_ms) const {
 }
 
 void Resolver::update_timeout() {
-    auto duration = std::chrono::steady_clock::now() - query_start;
-    auto duration_ms = std::chrono::duration_cast<std::chrono::duration<uint64_t, std::milli>>(duration).count();
-    if (duration_ms >= query_timeout_ms) throw query_timeout_error();
+    using namespace std::chrono;
 
-    auto time_left_ms = query_timeout_ms - duration_ms;
+    auto query_duration_ms = duration_cast<duration<uint64_t, std::milli>>(steady_clock::now() - query_start).count();
+    if (query_duration_ms >= query_timeout_ms) throw query_timeout_error();
+
+    auto time_left_ms = query_timeout_ms - query_duration_ms;
     if (time_left_ms < udp_timeout_ms) set_socket_timeout(time_left_ms);
 }
 
@@ -412,7 +420,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
 
     std::vector<uint8_t> buffer;
     std::string sname{domain};
-    std::queue<std::shared_ptr<Zone>> current_safe_zones{safe_zones};
+    SafetyBelt safety_belt{safety_belt_zones};
 
     struct sockaddr_in address;
     address.sin_family = AF_INET;
@@ -424,7 +432,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
         next_zone = std::move(search_zone);
     } else {
         next_zone = find_zone(sname);
-        if (next_zone == nullptr) next_zone = get_next_zone(current_safe_zones);
+        if (next_zone == nullptr) next_zone = safety_belt.next();
     }
 
     while (next_zone != nullptr) {
@@ -648,8 +656,8 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 // No referral and no answer from an authoritative nameserver indicate No Data.
                 if (response.is_authoritative) return std::vector<RR>{};
 
-                // If the nameserver isn't authoritative, try one of the safe zones.
-                next_zone = get_next_zone(current_safe_zones);
+                // If the nameserver isn't authoritative, try asking a zone from the safety belt.
+                next_zone = safety_belt.next();
                 if (next_zone == nullptr) return std::nullopt;
                 break;
             } catch (const query_timeout_error &) {

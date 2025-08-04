@@ -47,22 +47,34 @@ struct ResolverConfig {
 
 class Resolver {
 public:
-    Resolver(ResolverConfig config = {});
+    Resolver(const ResolverConfig &config = {});
     ~Resolver();
 
-    std::optional<std::vector<RR>> resolve(const std::string &domain, RRType rr_type);
+    std::optional<std::vector<RR>> resolve(const std::string &domain, RRType rr_type = RRType::A);
 
 private:
+    // List of zones to ask when there is no information to guide zone selection.
+    class SafetyBelt {
+    public:
+        SafetyBelt(const std::queue<std::shared_ptr<Zone>> &zones) : zones(zones) {}
+
+        std::shared_ptr<Zone> next();
+
+    private:
+        std::queue<std::shared_ptr<Zone>> zones;
+    };
+
     uint64_t query_timeout_ms, udp_timeout_ms;
     uint16_t port;
     bool verbose, enable_rd;
     FeatureState edns, dnssec, cookies;
+    const std::queue<std::shared_ptr<Zone>> safety_belt_zones;
     std::default_random_engine rng;
-    std::unordered_map<std::string, std::shared_ptr<Zone>, StringHash, std::equal_to<>> zones;
     int fd;
+    std::unordered_map<std::string, std::shared_ptr<Zone>, StringHash, std::equal_to<>> zones;
     std::chrono::time_point<std::chrono::steady_clock> query_start;
-    // List of zones to ask when the resolver has no information.
-    std::queue<std::shared_ptr<Zone>> safe_zones;
+
+    std::queue<std::shared_ptr<Zone>> init_safety_belt(const ResolverConfig &config) const;
 
     std::shared_ptr<Zone> new_zone(const std::string &domain, bool enable_dnssec = true) const;
     std::shared_ptr<Zone> new_root_zone() const;
