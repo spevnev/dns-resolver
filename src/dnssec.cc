@@ -621,26 +621,23 @@ bool authenticate_name_error(const std::string &domain, const std::vector<RR> &n
     return false;
 }
 
-std::optional<bool> authenticate_no_ds(const std::string &domain, const std::vector<RR> &nsec3_rrset,
-                                       const std::optional<RR> &nsec_rr, const std::string &zone_domain) {
+bool authenticate_no_ds(const std::string &domain, const std::vector<RR> &nsec3_rrset, const std::optional<RR> &nsec_rr,
+                        const std::string &zone_domain) {
     if (!nsec3_rrset.empty()) {
         auto nsec3 = find_matching_nsec3(nsec3_rrset, domain, zone_domain);
         if (nsec3.has_value()) {
-            if (nsec3->types.contains(RRType::DS) || nsec3->types.contains(RRType::CNAME)) return std::nullopt;
-            return nsec3->types.contains(RRType::DNSKEY);
+            return !nsec3->types.contains(RRType::DS) && !nsec3->types.contains(RRType::SOA)
+                   && nsec3->types.contains(RRType::NS);
         }
 
         // If no NSEC3 matches the name, the next closer NSEC3 must have opt out flag set.
         auto encloser_proof = verify_closest_encloser_proof(nsec3_rrset, domain, zone_domain);
-        if (!encloser_proof.has_value() || !encloser_proof->next_closer_opt_out) return std::nullopt;
-        return true;
+        return encloser_proof.has_value() && encloser_proof->next_closer_opt_out;
     }
 
-    if (!nsec_rr.has_value() || nsec_rr->type != RRType::NSEC) return std::nullopt;
+    if (!nsec_rr.has_value() || nsec_rr->type != RRType::NSEC) return false;
     const auto &nsec = std::get<NSEC>(nsec_rr->data);
-
-    if (nsec.types.contains(RRType::DS) || nsec.types.contains(RRType::CNAME)) return std::nullopt;
-    return nsec.types.contains(RRType::DNSKEY);
+    return !nsec.types.contains(RRType::DS) && !nsec.types.contains(RRType::SOA) && nsec.types.contains(RRType::NS);
 }
 
 bool authenticate_no_rrset(RRType rr_type, const std::string &domain, const std::vector<RR> &nsec3_rrset,
@@ -648,13 +645,11 @@ bool authenticate_no_rrset(RRType rr_type, const std::string &domain, const std:
     if (!nsec3_rrset.empty()) {
         auto nsec3 = find_matching_nsec3(nsec3_rrset, domain, zone_domain);
         if (!nsec3.has_value()) return false;
-        if (nsec3->types.contains(rr_type) || nsec3->types.contains(RRType::CNAME)) return false;
-        return true;
+        return !nsec3->types.contains(rr_type) && !nsec3->types.contains(RRType::CNAME);
     }
 
     if (!nsec_rr.has_value() || nsec_rr->type != RRType::NSEC) return false;
     const auto &nsec = std::get<NSEC>(nsec_rr->data);
-
     return !nsec.types.contains(rr_type) && !nsec.types.contains(RRType::CNAME);
 }
 };  // namespace dnssec

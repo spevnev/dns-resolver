@@ -15,9 +15,8 @@ bool authenticate_delegation(const std::vector<RR> &dnskey_rrset, const std::vec
                              const std::vector<RRSIG> &rrsigs, const std::string &zone_domain);
 bool authenticate_name_error(const std::string &domain, const std::vector<RR> &nsec3_rrset,
                              const std::vector<RR> &nsec_rrset, const std::string &zone_domain);
-// Authenticate the denial of existence of DS RRset, and returns whether the domain has DNSKEY.
-std::optional<bool> authenticate_no_ds(const std::string &domain, const std::vector<RR> &nsec3_rrset,
-                                       const std::optional<RR> &nsec_rr, const std::string &zone_domain);
+bool authenticate_no_ds(const std::string &domain, const std::vector<RR> &nsec3_rrset, const std::optional<RR> &nsec_rr,
+                        const std::string &zone_domain);
 bool authenticate_no_rrset(RRType rr_type, const std::string &domain, const std::vector<RR> &nsec3_rrset,
                            const std::optional<RR> &nsec_rr, const std::string &zone_domain);
 };  // namespace dnssec

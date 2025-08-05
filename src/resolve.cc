@@ -168,7 +168,7 @@ std::optional<std::vector<RR>> Resolver::resolve(const std::string &domain, RRTy
         set_socket_timeout(udp_timeout_ms);
         return resolve_rec(fully_qualify_domain(domain), rr_type, 0);
     } catch (const std::exception &e) {
-        if (verbose) std::println(stderr, "Failed to resolve the domain: {}", e.what());
+        if (verbose) std::println(stderr, "Failed to resolve the domain: {}.", e.what());
         return std::nullopt;
     }
 }
@@ -623,12 +623,10 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                             auto nsec3_rrset = get_rrset(response.authority, RRType::NSEC3, *zone);
                             auto nsec_rrset = get_rrset(response.authority, RRType::NSEC, referral_zone->domain, *zone);
                             auto nsec_rr = nsec_rrset.empty() ? std::nullopt : std::optional<RR>{nsec_rrset[0]};
-                            auto result
-                                = dnssec::authenticate_no_ds(referral_zone->domain, nsec3_rrset, nsec_rr, zone->domain);
-                            if (!result.has_value()) {
+                            if (!dnssec::authenticate_no_ds(referral_zone->domain, nsec3_rrset, nsec_rr,
+                                                            zone->domain)) {
                                 throw std::runtime_error("Failed to authenticate the denial of existence");
                             }
-                            referral_zone->enable_dnssec = result.value();
                         }
                     }
 
@@ -673,7 +671,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 }
             } catch (const std::exception &e) {
                 // Nameserver error, try asking the different nameserver if there are any left.
-                if (verbose) std::println(stderr, "Failed to resolve the domain: {}", e.what());
+                if (verbose) std::println(stderr, "Failed to resolve the domain: {}.", e.what());
             }
         }
     }
