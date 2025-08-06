@@ -76,8 +76,13 @@ int main(int argc, char **argv) {
 
         auto result = options.parse(argc, argv);
         if (result.contains("help")) {
-            std::println("{}", options.help());
+            std::print("{}", options.help());
             return EXIT_SUCCESS;
+        }
+
+        if (!result.unmatched().empty()) {
+            std::println(stderr, "Unmatched arguments: {}", result.unmatched());
+            return EXIT_FAILURE;
         }
 
         Resolver resolver{{

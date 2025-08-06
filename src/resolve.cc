@@ -152,6 +152,16 @@ Resolver::Resolver(const ResolverConfig &config)
 
     fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd == -1) throw std::runtime_error("Failed to create UDP socket");
+
+    // While the root NS (in . zone) are signed, their addresses (in root-servers.net zone) aren't.
+    // Load the unsigned zone of the root nameservers, otherwise query will fail (due to no RRSIG).
+    auto root_zone = new_zone("root-servers.net.", false);
+    in_addr_t ip_address;
+    for (const auto *ip : ROOT_IP) {
+        if (inet_pton(AF_INET, ip, &ip_address) != 1) throw std::runtime_error("Failed to add root nameservers");
+        root_zone->add_nameserver(ip_address);
+    }
+    zones[root_zone->domain] = root_zone;
 }
 
 Resolver::~Resolver() { close(fd); }
