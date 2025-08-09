@@ -338,28 +338,53 @@ void Resolver::udp_receive(std::vector<uint8_t> &buffer, struct sockaddr_in requ
     buffer.resize(result);
 }
 
-bool Resolver::authenticate_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &rrsigs, RRType rr_type,
+bool Resolver::authenticate_rrset(const std::vector<RR> &rrset, RRType rr_type, const std::vector<RRSIG> &rrsigs,
+                                  const std::vector<RR> &nsec3_rrset, const std::vector<RR> &nsec_rrset,
                                   const Zone &zone) const {
     if (rrset.empty()) return true;
 
     if (rr_type != RRType::DNSKEY) {
-        return dnssec::authenticate_rrset(rrset, rrsigs, zone.dnskeys, zone.domain);
+        return dnssec::authenticate_rrset(rrset, rrsigs, zone.dnskeys, nsec3_rrset, nsec_rrset, zone.domain);
     }
 
     if (!zone.dss.empty()) {
-        return dnssec::authenticate_delegation(rrset, zone.dss, rrsigs, zone.domain);
+        return dnssec::authenticate_delegation(rrset, zone.dss, rrsigs, nsec3_rrset, nsec_rrset, zone.domain);
     }
 
     // There is no secure delegation, so just verify that the RRSIG was signed with one of these DNSKEYs.
     auto dnskeys = rrset_to_data<DNSKEY>(rrset);
-    return dnssec::authenticate_rrset(rrset, rrsigs, dnskeys, zone.domain);
+    return dnssec::authenticate_rrset(rrset, rrsigs, dnskeys, nsec3_rrset, nsec_rrset, zone.domain);
 }
 
-std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, const Zone &zone, bool authenticate) const {
-    if (rr_type == RRType::ANY) {
-        assert(!authenticate);
-        return rrset;
+std::vector<RR> Resolver::get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type) const {
+    if (rr_type == RRType::ANY) return rrset;
+
+    std::vector<RR> result;
+    for (auto it = rrset.begin(); it != rrset.end(); ++it) {
+        if (it->type == rr_type) {
+            result.push_back(std::move(*it));
+            it = rrset.erase(it) - 1;
+        }
     }
+    return result;
+}
+
+std::vector<RR> Resolver::get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type,
+                                                    const std::string &domain) const {
+    std::vector<RR> result;
+    for (auto it = rrset.begin(); it != rrset.end(); ++it) {
+        if (it->domain != domain) continue;
+        if (it->type == rr_type || rr_type == RRType::ANY) {
+            result.push_back(std::move(*it));
+            it = rrset.erase(it) - 1;
+        }
+    }
+    return result;
+}
+
+std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, const std::vector<RR> &nsec3_rrset,
+                                    const std::vector<RR> &nsec_rrset, const Zone &zone) const {
+    assert(rr_type != RRType::ANY);
 
     std::vector<RR> result;
     std::vector<RR> current_rrset;
@@ -372,7 +397,7 @@ std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, cons
         if (it->type == rr_type) {
             current_rrset.push_back(std::move(*it));
             it = rrset.erase(it) - 1;
-        } else if (authenticate && it->type == RRType::RRSIG) {
+        } else if (it->type == RRType::RRSIG) {
             auto &rrsig = std::get<RRSIG>(it->data);
             if (rrsig.type_covered != rr_type) continue;
 
@@ -381,8 +406,8 @@ std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, cons
         }
 
         if (is_end_of_group) {
-            if (authenticate && zone.enable_dnssec
-                && !authenticate_rrset(current_rrset, current_rrsigs, rr_type, zone)) {
+            if (zone.enable_dnssec
+                && !authenticate_rrset(current_rrset, rr_type, current_rrsigs, nsec3_rrset, nsec_rrset, zone)) {
                 throw std::runtime_error("Failed to authenticate RRset");
             }
             result.append_range(std::move(current_rrset));
@@ -393,12 +418,10 @@ std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, cons
     return result;
 }
 
-std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, const std::string &domain, const Zone &zone,
-                                    bool authenticate) const {
-    if (rr_type == RRType::ANY) {
-        assert(!authenticate);
-        return rrset;
-    }
+std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, const std::string &domain,
+                                    const std::vector<RR> &nsec3_rrset, const std::vector<RR> &nsec_rrset,
+                                    const Zone &zone) const {
+    assert(rr_type != RRType::ANY);
 
     std::vector<RR> result;
     std::vector<RRSIG> rrsigs;
@@ -408,7 +431,7 @@ std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, cons
         if (it->type == rr_type) {
             result.push_back(std::move(*it));
             it = rrset.erase(it) - 1;
-        } else if (authenticate && it->type == RRType::RRSIG) {
+        } else if (it->type == RRType::RRSIG) {
             auto &rrsig = std::get<RRSIG>(it->data);
             if (rrsig.type_covered != rr_type) continue;
 
@@ -417,7 +440,7 @@ std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, cons
         }
     }
 
-    if (authenticate && zone.enable_dnssec && !authenticate_rrset(result, rrsigs, rr_type, zone)) {
+    if (zone.enable_dnssec && !authenticate_rrset(result, rr_type, rrsigs, nsec3_rrset, nsec_rrset, zone)) {
         throw std::runtime_error("Failed to authenticate RRset");
     }
 
@@ -510,7 +533,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
 
                 // Handle OPT record.
                 if (zone->enable_edns) {
-                    std::vector<RR> opt_rrset = get_rrset(response.additional, RRType::OPT, *zone, false);
+                    std::vector<RR> opt_rrset = get_unauthenticated_rrset(response.additional, RRType::OPT);
                     if (opt_rrset.size() == 1) {
                         auto &opt = std::get<OPT>(opt_rrset[0].data);
 
@@ -553,14 +576,16 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     std::println();
                 }
 
+                // Get the NSEC3 and the NSEC RRsets, required to authenticate the wildcard-expanded answer
+                auto nsec3_rrset = get_rrset(response.authority, RRType::NSEC3, {}, {}, *zone);
+                auto nsec_rrset = get_rrset(response.authority, RRType::NSEC, {}, {}, *zone);
+
                 switch (rcode) {
                     case RCode::Success:     break;
                     case RCode::FormatError: throw std::runtime_error("Nameserver is unable to interpret query"); break;
                     case RCode::ServerError: throw std::runtime_error("Nameserver error"); break;
                     case RCode::NameError:
                         if (zone->enable_dnssec) {
-                            auto nsec3_rrset = get_rrset(response.authority, RRType::NSEC3, *zone);
-                            auto nsec_rrset = get_rrset(response.authority, RRType::NSEC, *zone);
                             if (dnssec::authenticate_name_error(sname, nsec3_rrset, nsec_rrset, zone->domain)) {
                                 return std::vector<RR>{};
                             }
@@ -582,7 +607,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
 
                 // Follow the CNAMEs before looking for the answer.
                 bool followed_cname = false;
-                auto cname_rrset = get_rrset(response.answers, RRType::CNAME, *zone);
+                auto cname_rrset = get_rrset(response.answers, RRType::CNAME, nsec3_rrset, nsec_rrset, *zone);
                 for (;;) {
                     auto cname_rr = std::ranges::find(cname_rrset, sname, &RR::domain);
                     if (cname_rr == cname_rrset.end()) break;
@@ -596,12 +621,12 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
 
                 // Look for the answer.
                 if (rr_type == RRType::ANY) return response.answers;
-                auto result = get_rrset(response.answers, rr_type, sname, *zone);
+                auto result = get_rrset(response.answers, rr_type, sname, nsec3_rrset, nsec_rrset, *zone);
                 if (!result.empty()) return result;
 
                 // Look for the referral.
                 std::shared_ptr<Zone> referral_zone = nullptr;
-                auto ns_rrset = get_rrset(response.authority, RRType::NS, *zone, false);
+                auto ns_rrset = get_unauthenticated_rrset(response.authority, RRType::NS);
                 for (auto &ns_rr : ns_rrset) {
                     if (referral_zone == nullptr) {
                         if (count_matching_labels(sname, ns_rr.domain) <= count_matching_labels(sname, zone->domain)) {
@@ -615,7 +640,8 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
 
                     // Check if the additional section has nameservers' addresses.
                     auto &ns_domain = std::get<NS>(ns_rr.data).domain;
-                    auto a_rrset = rrset_to_data<A>(get_rrset(response.additional, RRType::A, ns_domain, *zone, false));
+                    auto a_rrset
+                        = rrset_to_data<A>(get_unauthenticated_rrset(response.additional, RRType::A, ns_domain));
                     if (a_rrset.empty()) {
                         referral_zone->add_nameserver(std::move(ns_domain));
                     } else {
@@ -626,17 +652,13 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 if (referral_zone != nullptr) {
                     // Follow the referral.
                     if (zone->enable_dnssec) {
-                        auto ds_rrset = get_rrset(response.authority, RRType::DS, referral_zone->domain, *zone);
+                        auto ds_rrset = get_rrset(response.authority, RRType::DS, referral_zone->domain, nsec3_rrset,
+                                                  nsec_rrset, *zone);
                         if (!ds_rrset.empty()) {
                             referral_zone->dss = rrset_to_data<DS>(ds_rrset);
-                        } else {
-                            auto nsec3_rrset = get_rrset(response.authority, RRType::NSEC3, *zone);
-                            auto nsec_rrset = get_rrset(response.authority, RRType::NSEC, referral_zone->domain, *zone);
-                            auto nsec_rr = nsec_rrset.empty() ? std::nullopt : std::optional<RR>{nsec_rrset[0]};
-                            if (!dnssec::authenticate_no_ds(referral_zone->domain, nsec3_rrset, nsec_rr,
-                                                            zone->domain)) {
-                                throw std::runtime_error("Failed to authenticate the denial of existence");
-                            }
+                        } else if (!dnssec::authenticate_no_ds(referral_zone->domain, nsec3_rrset, nsec_rrset,
+                                                               zone->domain)) {
+                            throw std::runtime_error("Failed to authenticate the denial of existence");
                         }
                     }
 
@@ -652,10 +674,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
 
                 // Look for the authenticated denial of existence.
                 if (zone->enable_dnssec && rr_type != RRType::DNSKEY) {
-                    auto nsec3_rrset = get_rrset(response.authority, RRType::NSEC3, *zone);
-                    auto nsec_rrset = get_rrset(response.authority, RRType::NSEC, sname, *zone);
-                    auto nsec_rr = nsec_rrset.empty() ? std::nullopt : std::optional<RR>{nsec_rrset[0]};
-                    if (!dnssec::authenticate_no_rrset(rr_type, sname, nsec3_rrset, nsec_rr, zone->domain)) {
+                    if (!dnssec::authenticate_no_rrset(rr_type, sname, nsec3_rrset, nsec_rrset, zone->domain)) {
                         throw std::runtime_error("Failed to authenticate the denial of existence");
                     }
                     return std::vector<RR>{};

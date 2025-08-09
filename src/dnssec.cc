@@ -14,6 +14,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include "dns.hh"
@@ -207,6 +208,16 @@ std::vector<std::string_view> domain_to_labels(const std::string_view &domain) {
     return labels;
 }
 
+std::string join_labels(const std::vector<std::string_view> &labels, size_t n) {
+    assert(n <= labels.size());
+    std::string result;
+    for (size_t i = 0; i < n; i++) {
+        result += labels[n - 1 - i];
+        result.push_back('.');
+    }
+    return result;
+}
+
 struct RRWithData {
     std::reference_wrapper<const RR> rr;
     std::vector<std::string_view> labels;
@@ -359,11 +370,38 @@ int compare_domains(const std::vector<std::string_view> &a, const std::vector<st
     return 0;
 }
 
-bool is_domain_between(const std::string &domain, const std::string &before, const std::string &after) {
+bool is_domain_covered(const std::string &domain, const std::string &owner, const std::string &next_domain) {
     auto domain_labels = domain_to_labels(domain);
-    auto before_labels = domain_to_labels(before);
-    auto after_labels = domain_to_labels(after);
-    return compare_domains(before_labels, domain_labels) < 0 && compare_domains(domain_labels, after_labels) < 0;
+    auto owner_labels = domain_to_labels(owner);
+    if (compare_domains(owner_labels, domain_labels) >= 0) return false;
+
+    auto next_domain_labels = domain_to_labels(next_domain);
+    if (compare_domains(owner_labels, next_domain_labels) > 0) {
+        // If the next domain comes before the owner name, it means that this is the last NSEC and
+        // its next domain is the first RR, so comparing only with the owner name is enough.
+        return true;
+    }
+    return compare_domains(domain_labels, next_domain_labels) < 0;
+}
+
+bool does_wildcard_cover(const std::string &wildcard_domain, const std::string &domain) {
+    assert(wildcard_domain[0] == '*');
+    std::string_view wildcard_suffix{wildcard_domain.begin() + 1, wildcard_domain.end()};
+    return domain.ends_with(wildcard_suffix);
+}
+
+bool find_covering_nsec(const std::vector<RR> &nsec_rrset, const std::string &domain) {
+    return std::ranges::any_of(nsec_rrset, [&](const auto &nsec_rr) {
+        const auto &nsec = std::get<NSEC>(nsec_rr.data);
+        return is_domain_covered(domain, nsec_rr.domain, nsec.next_domain);
+    });
+}
+
+std::optional<NSEC> find_matching_nsec(const std::vector<RR> &nsec_rrset, const std::string &domain) {
+    for (const auto &nsec_rr : nsec_rrset) {
+        if (nsec_rr.domain == domain) return std::get<NSEC>(nsec_rr.data);
+    }
+    return std::nullopt;
 }
 
 std::string get_nsec3_domain(const NSEC3 &nsec3, const std::string_view &domain, const std::string &zone_domain) {
@@ -399,33 +437,27 @@ std::string get_nsec3_domain(const NSEC3 &nsec3, const std::string_view &domain,
 
 std::optional<NSEC3> find_covering_nsec3(const std::vector<RR> &nsec3_rrset, const std::string_view &domain,
                                          const std::string &zone_domain) {
-    try {
-        if (nsec3_rrset.empty()) return std::nullopt;
-        const auto &nsec3 = std::get<NSEC3>(nsec3_rrset[0].data);
+    if (nsec3_rrset.empty()) return std::nullopt;
+    const auto &nsec3 = std::get<NSEC3>(nsec3_rrset[0].data);
 
-        auto covered_domain = get_nsec3_domain(nsec3, domain, zone_domain);
-        for (const auto &nsec3_rr : nsec3_rrset) {
-            const auto &nsec3 = std::get<NSEC3>(nsec3_rr.data);
-            auto next_domain = base32hex_encode(nsec3.next_domain_hash) + "." + zone_domain;
-            if (is_domain_between(covered_domain, nsec3_rr.domain, next_domain)) return std::get<NSEC3>(nsec3_rr.data);
-        }
-    } catch (...) {
+    auto covered_domain = get_nsec3_domain(nsec3, domain, zone_domain);
+    for (const auto &nsec3_rr : nsec3_rrset) {
+        const auto &nsec3 = std::get<NSEC3>(nsec3_rr.data);
+        auto next_domain = base32hex_encode(nsec3.next_domain_hash) + "." + zone_domain;
+        if (is_domain_covered(covered_domain, nsec3_rr.domain, next_domain)) return std::get<NSEC3>(nsec3_rr.data);
     }
     return std::nullopt;
 }
 
 std::optional<NSEC3> find_matching_nsec3(const std::vector<RR> &nsec3_rrset, const std::string_view &domain,
                                          const std::string &zone_domain) {
-    try {
-        if (nsec3_rrset.empty()) return std::nullopt;
-        const auto &nsec3 = std::get<NSEC3>(nsec3_rrset[0].data);
+    if (nsec3_rrset.empty()) return std::nullopt;
+    const auto &nsec3 = std::get<NSEC3>(nsec3_rrset[0].data);
 
-        auto matching_domain = get_nsec3_domain(nsec3, domain, zone_domain);
-        auto nsec3_rr = std::ranges::find(nsec3_rrset, matching_domain, &RR::domain);
-        if (nsec3_rr != nsec3_rrset.end()) return std::get<NSEC3>(nsec3_rr->data);
-    } catch (...) {
-    }
-    return std::nullopt;
+    auto matching_domain = get_nsec3_domain(nsec3, domain, zone_domain);
+    auto nsec3_rr = std::ranges::find(nsec3_rrset, matching_domain, &RR::domain);
+    if (nsec3_rr == nsec3_rrset.end()) return std::nullopt;
+    return std::get<NSEC3>(nsec3_rr->data);
 }
 
 struct EncloserProof {
@@ -483,7 +515,8 @@ uint16_t compute_key_tag(const std::vector<uint8_t> &data) {
 }
 
 bool authenticate_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &rrsigs,
-                        const std::vector<DNSKEY> &dnskeys, const std::string &zone_domain) {
+                        const std::vector<DNSKEY> &dnskeys, const std::vector<RR> &nsec3_rrset,
+                        const std::vector<RR> &nsec_rrset, const std::string &zone_domain) {
     if (rrset.empty()) return true;
     if (rrsigs.empty() || dnskeys.empty()) return false;
 
@@ -514,12 +547,24 @@ bool authenticate_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &
 
                 canonical_domain.clear();
                 if (rrsig.labels < rrset_labels.size()) {
-                    std::string domain = "*.";
-                    for (size_t i = 0; i < rrsig.labels; i++) {
-                        domain += rrset_labels[rrsig.labels - 1 - i];
-                        domain.push_back('.');
+                    if (rrset[0].type != RRType::NSEC3 && rrset[0].type != RRType::NSEC) {
+                        if (!nsec3_rrset.empty()) {
+                            // RFC5155 Section 8.8.
+                            // The closest encloser is the immediate ancestor to the wildcard,
+                            // so the next closer is one label longer.
+                            std::string next_closer = join_labels(rrset_labels, rrsig.labels + 1);
+                            // Verify that the NSEC3 covering the next closer exists,
+                            // which proves the non-existence of the exact match.
+                            if (!find_covering_nsec3(nsec3_rrset, next_closer, zone_domain).has_value()) continue;
+                        } else {
+                            // RFC4035 Section 5.4.
+                            // Verify that the covering NSEC exists, which proves the non-existence of the exact match.
+                            if (!find_covering_nsec(nsec_rrset, rrset[0].domain)) continue;
+                        }
                     }
-                    write_domain(canonical_domain, domain);
+
+                    std::string wildcard_domain = "*." + join_labels(rrset_labels, rrsig.labels);
+                    write_domain(canonical_domain, wildcard_domain);
                 } else {
                     write_domain(canonical_domain, rrset[0].domain);
                 }
@@ -557,7 +602,8 @@ bool authenticate_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &
 }
 
 bool authenticate_delegation(const std::vector<RR> &dnskey_rrset, const std::vector<DS> &dss,
-                             const std::vector<RRSIG> &rrsigs, const std::string &zone_domain) {
+                             const std::vector<RRSIG> &rrsigs, const std::vector<RR> &nsec3_rrset,
+                             const std::vector<RR> &nsec_rrset, const std::string &zone_domain) {
     if (dnskey_rrset.empty() || dss.empty()) return false;
 
     EVP_MD_CTX_unique_ptr ctx{EVP_MD_CTX_new()};
@@ -599,57 +645,106 @@ bool authenticate_delegation(const std::vector<RR> &dnskey_rrset, const std::vec
             continue;
         }
     }
-    return authenticate_rrset(dnskey_rrset, rrsigs, verified_dnskeys, zone_domain);
+    return authenticate_rrset(dnskey_rrset, rrsigs, verified_dnskeys, nsec3_rrset, nsec_rrset, zone_domain);
 }
 
 bool authenticate_name_error(const std::string &domain, const std::vector<RR> &nsec3_rrset,
                              const std::vector<RR> &nsec_rrset, const std::string &zone_domain) {
-    if (!nsec3_rrset.empty()) {
-        auto encloser_proof = verify_closest_encloser_proof(nsec3_rrset, domain, zone_domain);
-        if (!encloser_proof.has_value()) return false;
+    try {
+        if (!nsec3_rrset.empty()) {
+            // RFC5155 Section 8.4.
+            // Verify a closest encloser proof and find the NSEC3 covering the wildcard at the closest encloser.
+            auto encloser_proof = verify_closest_encloser_proof(nsec3_rrset, domain, zone_domain);
+            if (!encloser_proof.has_value()) return false;
 
-        auto wildcard_domain = "*." + encloser_proof->closest_encloser_domain;
-        return find_covering_nsec3(nsec3_rrset, wildcard_domain, zone_domain).has_value();
-    }
-
-    for (const auto &nsec_rr : nsec_rrset) {
-        if (nsec_rr.type != RRType::NSEC) return false;
-        const auto &nsec = std::get<NSEC>(nsec_rr.data);
-        if (is_domain_between(domain, nsec_rr.domain, nsec.next_domain)) return true;
-    }
-
-    return false;
-}
-
-bool authenticate_no_ds(const std::string &domain, const std::vector<RR> &nsec3_rrset, const std::optional<RR> &nsec_rr,
-                        const std::string &zone_domain) {
-    if (!nsec3_rrset.empty()) {
-        auto nsec3 = find_matching_nsec3(nsec3_rrset, domain, zone_domain);
-        if (nsec3.has_value()) {
-            return !nsec3->types.contains(RRType::DS) && !nsec3->types.contains(RRType::SOA)
-                   && nsec3->types.contains(RRType::NS);
+            auto wildcard_domain = "*." + encloser_proof->closest_encloser_domain;
+            return find_covering_nsec3(nsec3_rrset, wildcard_domain, zone_domain).has_value();
         }
 
-        // If no NSEC3 matches the name, the next closer NSEC3 must have opt out flag set.
-        auto encloser_proof = verify_closest_encloser_proof(nsec3_rrset, domain, zone_domain);
-        return encloser_proof.has_value() && encloser_proof->next_closer_opt_out;
+        // RFC4035 Section 5.4.
+        // Verify that the covering NSEC is present.
+        return find_covering_nsec(nsec_rrset, domain);
+    } catch (...) {
+        return false;
     }
+}
 
-    if (!nsec_rr.has_value() || nsec_rr->type != RRType::NSEC) return false;
-    const auto &nsec = std::get<NSEC>(nsec_rr->data);
-    return !nsec.types.contains(RRType::DS) && !nsec.types.contains(RRType::SOA) && nsec.types.contains(RRType::NS);
+bool authenticate_no_ds(const std::string &domain, const std::vector<RR> &nsec3_rrset,
+                        const std::vector<RR> &nsec_rrset, const std::string &zone_domain) {
+    try {
+        // RFC6840 Section 4.4.
+        // Insecure delegation requires the absence of DS and SOA, and presence of NS.
+        auto check_types = [](const std::unordered_set<RRType> &types) {
+            return !types.contains(RRType::DS) && !types.contains(RRType::SOA) && types.contains(RRType::NS);
+        };
+
+        if (!nsec3_rrset.empty()) {
+            // RFC5155 Section 8.6.
+            // Verify that the matching NSEC3 exists and check its types.
+            auto nsec3 = find_matching_nsec3(nsec3_rrset, domain, zone_domain);
+            if (nsec3.has_value()) return check_types(nsec3->types);
+
+            // If no NSEC3 matches the name, the next closer NSEC3 must have opt-out flag set.
+            auto encloser_proof = verify_closest_encloser_proof(nsec3_rrset, domain, zone_domain);
+            return encloser_proof.has_value() && encloser_proof->next_closer_opt_out;
+        }
+
+        // RFC4035 Section 5.4.
+        // Verify that the matching NSEC exists and check its types.
+        auto nsec = find_matching_nsec(nsec_rrset, domain);
+        if (!nsec.has_value()) return false;
+
+        return check_types(nsec->types);
+    } catch (...) {
+        return false;
+    }
 }
 
 bool authenticate_no_rrset(RRType rr_type, const std::string &domain, const std::vector<RR> &nsec3_rrset,
-                           const std::optional<RR> &nsec_rr, const std::string &zone_domain) {
-    if (!nsec3_rrset.empty()) {
-        auto nsec3 = find_matching_nsec3(nsec3_rrset, domain, zone_domain);
-        if (!nsec3.has_value()) return false;
-        return !nsec3->types.contains(rr_type) && !nsec3->types.contains(RRType::CNAME);
-    }
+                           const std::vector<RR> &nsec_rrset, const std::string &zone_domain) {
+    try {
+        // RFC6840 Section 4.3.
+        // Validating a no data response requires the absence of both the query type and the CNAME.
+        auto check_types = [rr_type](const std::unordered_set<RRType> &types) {
+            return !types.contains(rr_type) && !types.contains(RRType::CNAME);
+        };
 
-    if (!nsec_rr.has_value() || nsec_rr->type != RRType::NSEC) return false;
-    const auto &nsec = std::get<NSEC>(nsec_rr->data);
-    return !nsec.types.contains(rr_type) && !nsec.types.contains(RRType::CNAME);
+        if (!nsec3_rrset.empty()) {
+            // RFC5155 Section 8.5.
+            // Verify that the matching NSEC3 exists and check its types.
+            auto nsec3 = find_matching_nsec3(nsec3_rrset, domain, zone_domain);
+            if (nsec3.has_value()) return check_types(nsec3->types);
+
+            // RFC5155 Section 8.7.
+            // Verify a closest encloser proof, find the NSEC3 matching
+            // the wildcard at the closest encloser, and check its types.
+            auto encloser_proof = verify_closest_encloser_proof(nsec3_rrset, domain, zone_domain);
+            if (!encloser_proof.has_value()) return false;
+
+            auto wildcard_domain = "*." + encloser_proof->closest_encloser_domain;
+            auto wildcard_nsec3 = find_matching_nsec3(nsec3_rrset, wildcard_domain, zone_domain);
+            return wildcard_nsec3.has_value() && check_types(wildcard_nsec3->types);
+        }
+
+        // RFC4035 Section 5.4.
+        // If there is a matching NSEC, verify that both the QTYPE and the CNAME are not present.
+        auto nsec = find_matching_nsec(nsec_rrset, domain);
+        if (nsec.has_value()) return check_types(nsec->types);
+
+        // Otherwise check for wildcard expansion:
+        // 1. Verify that the covering NSEC exists, which proves the non-existence of the exact match.
+        // 2. Verify that if the NSEC matching a wildcard exists, both the QTYPE and the CNAME are not present.
+        if (!find_covering_nsec(nsec_rrset, domain)) return false;
+
+        const auto &wildcard_nsec_rr = std::ranges::find_if(nsec_rrset,  //
+                                                            [](const auto &rr) { return rr.domain.starts_with("*."); });
+        if (wildcard_nsec_rr == nsec_rrset.cend()) return true;
+        if (!does_wildcard_cover(wildcard_nsec_rr->domain, domain)) return false;
+
+        const auto &wildcard_nsec = std::get<NSEC>(wildcard_nsec_rr->data);
+        return check_types(wildcard_nsec.types);
+    } catch (...) {
+        return false;
+    }
 }
 };  // namespace dnssec

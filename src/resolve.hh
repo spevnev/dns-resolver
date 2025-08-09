@@ -89,11 +89,16 @@ private:
     void udp_send(const std::vector<uint8_t> &buffer, struct sockaddr_in address);
     void udp_receive(std::vector<uint8_t> &buffer, struct sockaddr_in address);
 
-    bool authenticate_rrset(const std::vector<RR> &rrset, const std::vector<RRSIG> &rrsigs, RRType rr_type,
+    std::vector<RR> get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type) const;
+    std::vector<RR> get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type, const std::string &domain) const;
+    bool authenticate_rrset(const std::vector<RR> &rrset, RRType rr_type, const std::vector<RRSIG> &rrsigs,
+                            const std::vector<RR> &nsec3_rrset, const std::vector<RR> &nsec_rrset,
                             const Zone &zone) const;
-    std::vector<RR> get_rrset(std::vector<RR> &rrset, RRType rr_type, const Zone &zone, bool authenticate = true) const;
-    std::vector<RR> get_rrset(std::vector<RR> &rrset, RRType rr_type, const std::string &domain, const Zone &zone,
-                              bool authenticate = true) const;
+    std::vector<RR> get_rrset(std::vector<RR> &rrset, RRType rr_type, const std::vector<RR> &nsec3_rrset,
+                              const std::vector<RR> &nsec_rrset, const Zone &zone) const;
+    std::vector<RR> get_rrset(std::vector<RR> &rrset, RRType rr_type, const std::string &domain,
+                              const std::vector<RR> &nsec3_rrset, const std::vector<RR> &nsec_rrset,
+                              const Zone &zone) const;
 
     template <typename T>
         requires IsInVariant<T, decltype(RR::data)>

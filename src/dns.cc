@@ -338,7 +338,7 @@ private:
         auto data_offset = offset;
 
         NSEC nsec;
-        nsec.next_domain = read_domain();
+        nsec.next_domain = read_domain(false);
 
         auto domain_size = offset - data_offset;
         nsec.types = read_rr_type_bitmap(data_length - domain_size);
