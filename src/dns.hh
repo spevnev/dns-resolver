@@ -202,7 +202,7 @@ struct RR {
 };
 
 template <>
-struct std::formatter<RRType> : std::formatter<string_view> {
+struct std::formatter<RRType> : public std::formatter<string_view> {
     auto format(const RRType &rr_type, std::format_context &ctx) const {
         std::string output;
         switch (rr_type) {

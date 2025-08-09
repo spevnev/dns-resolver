@@ -78,12 +78,12 @@ const DS ROOT_DS[]
            .data = {},
        }};
 
-class query_timeout_error : std::runtime_error {
+class query_timeout_error : public std::runtime_error {
 public:
     query_timeout_error() : std::runtime_error("Query timed out") {}
 };
 
-class bad_cookie_error : std::runtime_error {
+class bad_cookie_error : public std::runtime_error {
 public:
     bad_cookie_error() : std::runtime_error("Bad server cookie") {}
 };
@@ -688,8 +688,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 if (next_zone == nullptr) return std::nullopt;
                 break;
             } catch (const query_timeout_error &) {
-                if (verbose) std::println(stderr, "Query timed out");
-                return std::nullopt;
+                throw;
             } catch (const bad_cookie_error &) {
                 if (!nameserver->sent_bad_cookie) {
                     // Retry the same nameserver with the new server cookie once.
