@@ -91,10 +91,10 @@ public:
 // Check domain length, convert it to lowercase and fully qualify.
 std::string fully_qualify_domain(const std::string &domain) {
     std::string fqd;
-    fqd.reserve(domain.size() + 1);
+    fqd.reserve(domain.length() + 1);
 
     size_t label_index = 0;
-    for (size_t i = 0; i < domain.size(); i++) {
+    for (size_t i = 0; i < domain.length(); i++) {
         if (domain[i] == '.') {
             if (i == 0 && domain != ".") throw std::runtime_error("Domain starts with a dot");
             if (i > 0 && domain[i - 1] == '.') throw std::runtime_error("Domain has an empty label");
@@ -106,7 +106,7 @@ std::string fully_qualify_domain(const std::string &domain) {
     }
     if (!domain.ends_with('.')) fqd.push_back('.');
 
-    if (fqd.size() > MAX_DOMAIN_LENGTH) throw std::runtime_error("Domain is too long");
+    if (fqd.length() > MAX_DOMAIN_LENGTH) throw std::runtime_error("Domain is too long");
     return fqd;
 }
 
@@ -277,7 +277,7 @@ std::shared_ptr<Zone> Resolver::find_zone(const std::string &domain) const {
 
         auto next_label_index = current.find('.');
         assert(next_label_index != std::string::npos);
-        if (next_label_index == current.size() - 1) return nullptr;
+        if (next_label_index == current.length() - 1) return nullptr;
         current.remove_prefix(next_label_index + 1);
     }
 }
@@ -356,7 +356,7 @@ bool Resolver::authenticate_rrset(const std::vector<RR> &rrset, RRType rr_type, 
     return dnssec::authenticate_rrset(rrset, rrsigs, dnskeys, nsec3_rrset, nsec_rrset, zone.domain);
 }
 
-std::vector<RR> Resolver::get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type) const {
+std::vector<RR> Resolver::get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type) {
     if (rr_type == RRType::ANY) return rrset;
 
     std::vector<RR> result;
@@ -369,8 +369,7 @@ std::vector<RR> Resolver::get_unauthenticated_rrset(std::vector<RR> &rrset, RRTy
     return result;
 }
 
-std::vector<RR> Resolver::get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type,
-                                                    const std::string &domain) const {
+std::vector<RR> Resolver::get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type, const std::string &domain) {
     std::vector<RR> result;
     for (auto it = rrset.begin(); it != rrset.end(); ++it) {
         if (it->domain != domain) continue;

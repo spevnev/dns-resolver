@@ -122,10 +122,10 @@ private:
         return std::make_unique<ResponseReader>(buffer, offset);
     }
 
-    void read(size_t length, auto &container) {
-        if (offset + length > buffer.size()) throw std::runtime_error("Response is too short");
-        container.assign(buffer.cbegin() + offset, buffer.cbegin() + offset + length);
-        offset += length;
+    void read(size_t size, auto &container) {
+        if (offset + size > buffer.size()) throw std::runtime_error("Response is too short");
+        container.assign(buffer.cbegin() + offset, buffer.cbegin() + offset + size);
+        offset += size;
     }
 
     template <typename T>
@@ -192,7 +192,7 @@ private:
         read_domain_rec(allow_compression, domain);
         // Handle root domain.
         if (domain.empty()) return ".";
-        if (domain.size() > MAX_DOMAIN_LENGTH) throw std::runtime_error("Domain is too long");
+        if (domain.length() > MAX_DOMAIN_LENGTH) throw std::runtime_error("Domain is too long");
         return domain;
     }
 

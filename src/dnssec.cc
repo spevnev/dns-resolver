@@ -12,6 +12,7 @@
 #include <cstring>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_set>
@@ -194,7 +195,7 @@ const EVP_MD *get_nsec3_hash_algorithm(HashAlgorithm algorithm) {
 std::vector<std::string_view> domain_to_labels(const std::string_view &domain) {
     assert(!domain.empty());
     std::vector<std::string_view> labels;
-    auto pos = domain.size() - 1;
+    auto pos = domain.length() - 1;
     while (pos > 0) {
         auto next_pos = domain.find_last_of('.', pos - 1);
         if (next_pos == std::string::npos) {
@@ -211,9 +212,10 @@ std::vector<std::string_view> domain_to_labels(const std::string_view &domain) {
 std::string join_labels(const std::vector<std::string_view> &labels, size_t n) {
     assert(n <= labels.size());
     std::string result;
-    for (size_t i = 0; i < n; i++) {
-        result += labels[n - 1 - i];
-        result.push_back('.');
+    auto last_n_labels = labels | std::views::reverse | std::views::take(n);
+    for (const auto &label : last_n_labels) {
+        result += label;
+        result += '.';
     }
     return result;
 }
@@ -398,10 +400,9 @@ bool find_covering_nsec(const std::vector<RR> &nsec_rrset, const std::string &do
 }
 
 std::optional<NSEC> find_matching_nsec(const std::vector<RR> &nsec_rrset, const std::string &domain) {
-    for (const auto &nsec_rr : nsec_rrset) {
-        if (nsec_rr.domain == domain) return std::get<NSEC>(nsec_rr.data);
-    }
-    return std::nullopt;
+    const auto &nsec_rr = std::ranges::find(nsec_rrset, domain, &RR::domain);
+    if (nsec_rr == nsec_rrset.end()) return std::nullopt;
+    return std::get<NSEC>(nsec_rr->data);
 }
 
 std::string get_nsec3_domain(const NSEC3 &nsec3, const std::string_view &domain, const std::string &zone_domain) {
@@ -488,7 +489,7 @@ std::optional<EncloserProof> verify_closest_encloser_proof(const std::vector<RR>
         if (sname == ".") return std::nullopt;
         auto next_label_index = sname.find('.');
         assert(next_label_index != std::string::npos);
-        if (next_label_index != sname.size() - 1) next_label_index++;
+        if (next_label_index != sname.length() - 1) next_label_index++;
         sname.remove_prefix(next_label_index);
     }
 }
@@ -622,6 +623,7 @@ bool authenticate_delegation(const std::vector<RR> &dnskey_rrset, const std::vec
                 if (dnskey_rr.type != RRType::DNSKEY) return false;
                 const auto &dnskey = std::get<DNSKEY>(dnskey_rr.data);
 
+                if (dnskey.algorithm != ds.signing_algorithm) continue;
                 if (dnskey.key_tag != ds.key_tag) continue;
 
                 canonical_domain.clear();
@@ -738,7 +740,7 @@ bool authenticate_no_rrset(RRType rr_type, const std::string &domain, const std:
 
         const auto &wildcard_nsec_rr = std::ranges::find_if(nsec_rrset,  //
                                                             [](const auto &rr) { return rr.domain.starts_with("*."); });
-        if (wildcard_nsec_rr == nsec_rrset.cend()) return true;
+        if (wildcard_nsec_rr == nsec_rrset.end()) return true;
         if (!does_wildcard_cover(wildcard_nsec_rr->domain, domain)) return false;
 
         const auto &wildcard_nsec = std::get<NSEC>(wildcard_nsec_rr->data);

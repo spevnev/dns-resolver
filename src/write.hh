@@ -53,6 +53,6 @@ inline void write_domain(std::vector<uint8_t> &buffer, std::string_view domain) 
 }
 
 inline void write_char_string(std::vector<uint8_t> &buffer, const std::string &str) {
-    buffer.push_back(str.size());
+    buffer.push_back(str.length());
     std::ranges::copy(str, std::back_inserter(buffer));
 }

@@ -89,8 +89,8 @@ private:
     void udp_send(const std::vector<uint8_t> &buffer, struct sockaddr_in address);
     void udp_receive(std::vector<uint8_t> &buffer, struct sockaddr_in address);
 
-    std::vector<RR> get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type) const;
-    std::vector<RR> get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type, const std::string &domain) const;
+    static std::vector<RR> get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type);
+    static std::vector<RR> get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type, const std::string &domain);
     bool authenticate_rrset(const std::vector<RR> &rrset, RRType rr_type, const std::vector<RRSIG> &rrsigs,
                             const std::vector<RR> &nsec3_rrset, const std::vector<RR> &nsec_rrset,
                             const Zone &zone) const;
