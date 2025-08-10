@@ -9,7 +9,7 @@ named_pid_path=$named_dir/named.pid
 keys_path=./tests/bind/keys
 named_config_path=./tests/bind/named.conf
 base_zone_path=./tests/bind/base.db
-zone_names=(unsigned.com signed.com)
+zone_names=(unsigned.com signed.com nsec3-signed.com)
 
 bind_cases_src_dir=./tests/cases/bind
 cases_out_dir=./build/tests/cases
@@ -50,6 +50,9 @@ fi
 
 # Terminate named before exiting
 trap "kill -- \$(cat $named_pid_path)" SIGINT SIGTERM EXIT
+
+# Wait for the named to sign the zones
+sleep 1
 
 # Run tests
 passed=0

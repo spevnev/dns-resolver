@@ -592,10 +592,10 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     case RCode::ServerError: throw std::runtime_error("Nameserver error"); break;
                     case RCode::NameError:
                         if (zone->enable_dnssec) {
-                            if (dnssec::authenticate_name_error(sname, nsec3_rrset, nsec_rrset, zone->domain)) {
-                                return std::vector<RR>{};
+                            if (!dnssec::authenticate_name_error(sname, nsec3_rrset, nsec_rrset, zone->domain)) {
+                                throw std::runtime_error("Failed to authenticate the denial of existence");
                             }
-                            throw std::runtime_error("Failed to authenticate the denial of existence");
+                            return std::vector<RR>{};
                         }
 
                         if (!response.is_authoritative) {
