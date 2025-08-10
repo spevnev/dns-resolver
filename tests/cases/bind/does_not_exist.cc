@@ -2,12 +2,16 @@
 #include "config.hh"
 #include "resolve.hh"
 
+// TODO: rename name error. unsigned, nsec, nsec3
+// TODO: wildcards, mention RFCs
+// TODO: no data error (unsigned, nsec, nsec3)
+// TODO: successful wildcard case
 int main() {
-    Resolver resolver{TEST_RESOLVER_CONFIG};
-    auto opt_rrset = resolver.resolve("does.not.exist." TEST_DOMAIN, RRType::A);
-    ASSERT(opt_rrset.has_value());
+    Resolver resolver{UNSIGNED_RESOLVER_CONFIG};
+    auto response = resolver.resolve("does.not.exist." UNSIGNED_DOMAIN, RRType::A);
+    ASSERT(response.has_value());
 
-    auto &rrset = opt_rrset.value();
+    auto &rrset = response.value();
     ASSERT(rrset.empty());
 
     return EXIT_SUCCESS;

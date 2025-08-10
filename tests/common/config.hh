@@ -1,10 +1,42 @@
 #include "resolve.hh"
 
-#define TEST_DOMAIN "test.com."
+#define UNSIGNED_DOMAIN "unsigned.com."
+static const ResolverConfig UNSIGNED_RESOLVER_CONFIG{
+    .timeout_ms = 500,
+    .nameserver = NameserverConfig{.address = "127.0.0.1"},
+    .use_root_nameservers = false,
+    .use_resolve_config = false,
+    .port = 1053,
+    .dnssec = FeatureState::Disable,
+};
 
-static const ResolverConfig TEST_RESOLVER_CONFIG{
-    .timeout_ms = 1000,
-    .nameserver = "127.0.0.1",
+#define SIGNED_DOMAIN "signed.com."
+static const ResolverConfig SIGNED_RESOLVER_CONFIG{
+    .timeout_ms = 500,
+    .nameserver = NameserverConfig{
+        .address = "127.0.0.1",
+        .zone_domain = SIGNED_DOMAIN,
+        .dss = {DS{
+            .key_tag = 22197,
+            .signing_algorithm = SigningAlgorithm::ECDSAP256SHA256,
+            .digest_algorithm = DigestAlgorithm::SHA256,
+            .digest = {0x11, 0xB5, 0x5D, 0x67, 0xF6, 0x98, 0x97, 0xB5, 0xAC, 0x5C, 0xF7,
+                        0xF3, 0x75, 0x73, 0x00, 0x84, 0xA0, 0x3A, 0xC0, 0xAD, 0x59, 0xDA,
+                        0xAD, 0xA9, 0xA9, 0x96, 0x57, 0x71, 0x82, 0x17, 0x99, 0x2D},
+            .data = {},
+        }},
+    },
+    .use_root_nameservers = false,
+    .use_resolve_config = false,
+    .port = 1053,
+    .dnssec = FeatureState::Require,
+};
+
+#define MOCK_DOMAIN "test.com."
+#define MOCK_NAMESERVER_ADDRESS "127.0.0.2"
+static const ResolverConfig MOCK_RESOLVER_CONFIG{
+    .timeout_ms = 500,
+    .nameserver = NameserverConfig{.address = MOCK_NAMESERVER_ADDRESS},
     .use_root_nameservers = false,
     .use_resolve_config = false,
     .port = 1053,

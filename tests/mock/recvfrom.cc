@@ -87,9 +87,9 @@ ssize_t recvfrom(int _fd, void *buf, size_t n, int _flags, struct sockaddr *addr
 
     struct sockaddr_in ip_addr;
     ip_addr.sin_family = AF_INET;
-    ip_addr.sin_port = htons(TEST_RESOLVER_CONFIG.port);
+    ip_addr.sin_port = htons(MOCK_RESOLVER_CONFIG.port);
 
-    auto result = inet_pton(AF_INET, TEST_RESOLVER_CONFIG.nameserver->c_str(), &ip_addr.sin_addr);
+    auto result = inet_pton(AF_INET, MOCK_NAMESERVER_ADDRESS, &ip_addr.sin_addr);
     assert(result == 1);
 
     assert(addr_len != nullptr && addr != nullptr);

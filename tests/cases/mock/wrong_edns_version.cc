@@ -13,11 +13,11 @@ MockResponse mock_response = {
 };
 
 int main() {
-    auto config = TEST_RESOLVER_CONFIG;
+    auto config = MOCK_RESOLVER_CONFIG;
     config.edns = FeatureState::Require;
 
     Resolver resolver{config};
-    auto opt_rrset = resolver.resolve(TEST_DOMAIN, RRType::A);
+    auto opt_rrset = resolver.resolve(MOCK_DOMAIN, RRType::A);
     ASSERT(!opt_rrset.has_value());
     return EXIT_SUCCESS;
 }

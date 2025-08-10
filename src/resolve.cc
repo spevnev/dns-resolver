@@ -26,7 +26,6 @@ struct Nameserver {
 };
 
 struct Zone {
-    // Do not use the zone whose nameserver is being resolved.
     bool is_being_resolved{false};
     std::string domain;
     bool enable_edns;
@@ -195,11 +194,11 @@ std::shared_ptr<Zone> Resolver::SafetyBelt::next() {
 std::queue<std::shared_ptr<Zone>> Resolver::init_safety_belt(const ResolverConfig &config) const {
     std::queue<std::shared_ptr<Zone>> zones;
 
-    if (dnssec != FeatureState::Require) {
-        // Only the root zone can be used with DNSSEC because it is the only trust anchor.
-        if (config.nameserver.has_value()) zones.push(new_zone_from_nameserver(config.nameserver.value()));
-        if (config.use_resolve_config) zones.push(load_resolve_config());
+    if (config.nameserver.has_value()) {
+        auto zone = new_zone_from_config(config.nameserver.value());
+        if (zone->enable_dnssec || dnssec != FeatureState::Require) zones.push(std::move(zone));
     }
+    if (config.use_resolve_config && dnssec != FeatureState::Require) zones.push(load_resolve_config());
     if (config.use_root_nameservers) zones.push(new_root_zone());
 
     if (zones.empty()) throw std::runtime_error("No nameserver is specified");
@@ -255,13 +254,18 @@ std::shared_ptr<Zone> Resolver::load_resolve_config() const {
     return zone;
 }
 
-std::shared_ptr<Zone> Resolver::new_zone_from_nameserver(const std::string &address_or_domain) const {
-    auto zone = new_zone(".", false);
+std::shared_ptr<Zone> Resolver::new_zone_from_config(const NameserverConfig &config) const {
+    auto zone_domain = config.zone_domain.has_value() ? fully_qualify_domain(config.zone_domain.value()) : ".";
+    bool enable_dnssec = config.zone_domain.has_value() && (!config.dss.empty() || !config.dnskeys.empty());
+    auto zone = new_zone(zone_domain, enable_dnssec);
+    zone->dss = config.dss;
+    zone->dnskeys = config.dnskeys;
+
     in_addr_t ip_address;
-    if (inet_pton(AF_INET, address_or_domain.c_str(), &ip_address) == 1) {
+    if (inet_pton(AF_INET, config.address.c_str(), &ip_address) == 1) {
         zone->add_nameserver(ip_address);
     } else {
-        zone->add_nameserver(address_or_domain);
+        zone->add_nameserver(fully_qualify_domain(config.address));
     }
     return zone;
 }
@@ -343,17 +347,17 @@ bool Resolver::authenticate_rrset(const std::vector<RR> &rrset, RRType rr_type, 
                                   const Zone &zone) const {
     if (rrset.empty()) return true;
 
-    if (rr_type != RRType::DNSKEY) {
-        return dnssec::authenticate_rrset(rrset, rrsigs, zone.dnskeys, nsec3_rrset, nsec_rrset, zone.domain);
+    if (rr_type == RRType::DNSKEY && zone.dnskeys.empty()) {
+        if (!zone.dss.empty()) {
+            return dnssec::authenticate_delegation(rrset, zone.dss, rrsigs, nsec3_rrset, nsec_rrset, zone.domain);
+        }
+
+        // There is no secure delegation, so just verify that the RRSIG was signed with one of these DNSKEYs.
+        auto dnskeys = rrset_to_data<DNSKEY>(rrset);
+        return dnssec::authenticate_rrset(rrset, rrsigs, dnskeys, nsec3_rrset, nsec_rrset, zone.domain);
     }
 
-    if (!zone.dss.empty()) {
-        return dnssec::authenticate_delegation(rrset, zone.dss, rrsigs, nsec3_rrset, nsec_rrset, zone.domain);
-    }
-
-    // There is no secure delegation, so just verify that the RRSIG was signed with one of these DNSKEYs.
-    auto dnskeys = rrset_to_data<DNSKEY>(rrset);
-    return dnssec::authenticate_rrset(rrset, rrsigs, dnskeys, nsec3_rrset, nsec_rrset, zone.domain);
+    return dnssec::authenticate_rrset(rrset, rrsigs, zone.dnskeys, nsec3_rrset, nsec_rrset, zone.domain);
 }
 
 std::vector<RR> Resolver::get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type) {
@@ -472,8 +476,11 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
         next_zone = nullptr;
 
         // Get zone's DNSKEYs.
-        if (zone->enable_dnssec && zone->dnskeys.empty() && rr_type != RRType::DNSKEY) {
+        if (zone->enable_dnssec && zone->dnskeys.empty() && !zone->is_being_resolved) {
+            zone->is_being_resolved = true;
             auto dnskey_rrset = resolve_rec(zone->domain, RRType::DNSKEY, depth + 1, zone);
+            zone->is_being_resolved = false;
+
             if (dnskey_rrset.has_value() && !dnskey_rrset->empty()) {
                 zone->dnskeys = rrset_to_data<DNSKEY>(std::move(dnskey_rrset.value()));
             } else {
@@ -633,7 +640,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                         }
                         referral_zone = new_zone(ns_rr.domain);
                     } else if (ns_rr.domain != referral_zone->domain) {
-                        throw std::runtime_error(std::format("Authority contains multiple referrals: {} and {}",
+                        throw std::runtime_error(std::format("Authority contains multiple referrals: \"{}\" and \"{}\"",
                                                              ns_rr.domain, referral_zone->domain));
                     }
 
@@ -693,9 +700,8 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     // Retry the same nameserver with the new server cookie once.
                     i--;
                     nameserver->sent_bad_cookie = true;
-                } else {
-                    // Try a different nameserver.
                 }
+                // Try a different nameserver.
             } catch (const std::exception &e) {
                 // Nameserver error, try asking the different nameserver if there are any left.
                 if (verbose) std::println(stderr, "Failed to resolve the domain: {}.", e.what());

@@ -12,8 +12,8 @@ MockResponse mock_response = {
 int main() {
     auto unknown_rr_type = static_cast<RRType>(0xFF00);
 
-    Resolver resolver{TEST_RESOLVER_CONFIG};
-    auto opt_rrset = resolver.resolve(TEST_DOMAIN, unknown_rr_type);
+    Resolver resolver{MOCK_RESOLVER_CONFIG};
+    auto opt_rrset = resolver.resolve(MOCK_DOMAIN, unknown_rr_type);
     ASSERT(opt_rrset.has_value());
 
     auto &rrset = opt_rrset.value();

@@ -32,9 +32,16 @@ struct Zone;
 
 enum class FeatureState { Disable, Enable, Require };
 
+struct NameserverConfig {
+    std::string address;
+    std::optional<std::string> zone_domain{std::nullopt};
+    std::vector<DS> dss{};
+    std::vector<DNSKEY> dnskeys{};
+};
+
 struct ResolverConfig {
     uint64_t timeout_ms{5000};
-    std::optional<std::string> nameserver{std::nullopt};
+    std::optional<NameserverConfig> nameserver{std::nullopt};
     bool use_root_nameservers{true};
     bool use_resolve_config{true};
     uint16_t port{DNS_PORT};
@@ -79,7 +86,7 @@ private:
     std::shared_ptr<Zone> new_zone(const std::string &domain, bool enable_dnssec = true) const;
     std::shared_ptr<Zone> new_root_zone() const;
     std::shared_ptr<Zone> load_resolve_config() const;
-    std::shared_ptr<Zone> new_zone_from_nameserver(const std::string &address_or_domain) const;
+    std::shared_ptr<Zone> new_zone_from_config(const NameserverConfig &config) const;
     std::shared_ptr<Zone> find_zone(const std::string &domain) const;
     void zone_disable_dnssec(Zone &zone) const;
 

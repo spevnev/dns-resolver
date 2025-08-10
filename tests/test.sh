@@ -6,15 +6,13 @@ GREEN="\e[1;32m"
 
 named_dir=./build/named
 named_pid_path=$named_dir/named.pid
-zone_file_path=$named_dir/test.zone
-named_conf_path=./tests/bind/named.conf
-zone_base_path=./tests/bind/test.zone.base
-zone_name=test.com
+keys_path=./tests/bind/keys
+named_config_path=./tests/bind/named.conf
+base_zone_path=./tests/bind/base.db
+zone_names=(unsigned.com signed.com)
 
 bind_cases_src_dir=./tests/cases/bind
 cases_out_dir=./build/tests/cases
-
-set -e -o pipefail
 
 # Check executables
 executables=(named named-checkzone awk sed)
@@ -25,29 +23,35 @@ for executable in "${executables[@]}"; do
     fi
 done
 
-# Create zone file
+# Setup named directory
 mkdir -p $named_dir
-cp $zone_base_path $zone_file_path
-zone_entries=$(grep -r "///" $bind_cases_src_dir | sed -re 's/(\S+):\s*\/{3} (.+)/\2 ; \1/')
-echo -e "\n$zone_entries" >> $zone_file_path
+cp -r $keys_path $named_dir
 
-# Check zone file, and print output on error
-set +e
-output=$(named-checkzone -k fail $zone_name $zone_file_path)
-if [ $? -ne 0 ]; then
-    echo "$output"
-    exit 1
-fi
-set -e
+# Create a zone file for every zone name
+# The entries are defined in test cases as comments that start with ///
+zone_entries=$(grep -r "///" $bind_cases_src_dir | sed -re 's/(\S+):\s*\/{3} (.+)/\2 ; \1/')
+for zone_name in "${zone_names[@]}"; do
+    zone_path=$named_dir/$zone_name.db
+    echo -e "$(cat $base_zone_path)\n$zone_entries" > $zone_path
+
+    output=$(named-checkzone -i local -k fail $zone_name $zone_path)
+    if [ $? -ne 0 ]; then
+        echo "[ERROR] $output"
+        exit 1
+    fi
+done
 
 # Start named
-named -c $named_conf_path
+named -c $named_config_path
+if [ $? -ne 0 ]; then
+    echo "[ERROR] Failed to start named"
+    exit 1
+fi
 
 # Terminate named before exiting
 trap "kill -- \$(cat $named_pid_path)" SIGINT SIGTERM EXIT
 
 # Run tests
-set +e
 passed=0
 failed=0
 for test in $(find $cases_out_dir -type f -executable); do

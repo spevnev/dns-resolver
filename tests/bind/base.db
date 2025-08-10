@@ -1,5 +1,5 @@
-$TTL 0
-@ SOA @ @ 0 1d 1h 1w 0
+$TTL 1d
+@ SOA mname rname 100 200 300 400 500
 
 ; Nameservers
 @      NS     ns1

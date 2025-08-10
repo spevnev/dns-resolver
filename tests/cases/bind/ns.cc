@@ -2,15 +2,25 @@
 #include "config.hh"
 #include "resolve.hh"
 
-int main() {
-    Resolver resolver{TEST_RESOLVER_CONFIG};
-    auto opt_rrset = resolver.resolve(TEST_DOMAIN, RRType::NS);
-    ASSERT(opt_rrset.has_value());
+namespace {
+void check_response(const std::optional<std::vector<RR>> &response, const std::string &zone_domain) {
+    ASSERT(response.has_value());
 
-    auto &rrset = opt_rrset.value();
+    const auto &rrset = response.value();
     ASSERT(rrset.size() == 2);
-    ASSERT(rrset[0].type == RRType::NS);
-    ASSERT(rrset[1].type == RRType::NS);
 
+    for (const auto &rr : rrset) {
+        ASSERT(rr.type == RRType::NS);
+        const auto &ns = std::get<NS>(rr.data);
+        ASSERT(ns.domain.ends_with(zone_domain));
+    }
+}
+}  // namespace
+
+int main() {
+    Resolver unsigned_resolver{UNSIGNED_RESOLVER_CONFIG};
+    Resolver signed_resolver{SIGNED_RESOLVER_CONFIG};
+    check_response(unsigned_resolver.resolve(UNSIGNED_DOMAIN, RRType::NS), UNSIGNED_DOMAIN);
+    check_response(signed_resolver.resolve(SIGNED_DOMAIN, RRType::NS), SIGNED_DOMAIN);
     return EXIT_SUCCESS;
 }

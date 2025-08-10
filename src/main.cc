@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <print>
 #include <string>
 #include "dns.hh"
@@ -85,9 +86,14 @@ int main(int argc, char **argv) {
             return EXIT_FAILURE;
         }
 
+        std::optional<NameserverConfig> nameserver = std::nullopt;
+        if (result.contains("server")) {
+            nameserver = NameserverConfig{.address = result["server"].as<std::string>()};
+        }
+
         Resolver resolver{{
             .timeout_ms = result["timeout"].as<uint64_t>() * 1000,
-            .nameserver = result["server"].as_optional<std::string>(),
+            .nameserver = nameserver,
             .use_root_nameservers = result["use-root"].as<bool>(),
             .use_resolve_config = result["use-config"].as<bool>(),
             .port = result["port"].as<uint16_t>(),

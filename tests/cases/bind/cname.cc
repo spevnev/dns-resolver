@@ -2,18 +2,25 @@
 #include "config.hh"
 #include "resolve.hh"
 
-int main() {
-    /// cname CNAME result.cname
-    Resolver resolver{TEST_RESOLVER_CONFIG};
-    auto opt_rrset = resolver.resolve("cname." TEST_DOMAIN, RRType::CNAME);
-    ASSERT(opt_rrset.has_value());
+/// cname CNAME result.cname
 
-    auto &rrset = opt_rrset.value();
+namespace {
+void check_response(const std::optional<std::vector<RR>> &response, const std::string &zone_domain) {
+    ASSERT(response.has_value());
+
+    const auto &rrset = response.value();
     ASSERT(rrset.size() == 1);
 
-    auto &rr = rrset[0];
+    const auto &rr = rrset[0];
     ASSERT(rr.type == RRType::CNAME);
-    ASSERT(std::get<CNAME>(rr.data).domain == "result.cname." TEST_DOMAIN);
+    ASSERT(std::get<CNAME>(rr.data).domain == "result.cname." + zone_domain);
+}
+}  // namespace
 
+int main() {
+    Resolver unsigned_resolver{UNSIGNED_RESOLVER_CONFIG};
+    Resolver signed_resolver{SIGNED_RESOLVER_CONFIG};
+    check_response(unsigned_resolver.resolve("cname." UNSIGNED_DOMAIN, RRType::CNAME), UNSIGNED_DOMAIN);
+    check_response(signed_resolver.resolve("cname." SIGNED_DOMAIN, RRType::CNAME), SIGNED_DOMAIN);
     return EXIT_SUCCESS;
 }

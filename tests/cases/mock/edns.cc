@@ -62,10 +62,10 @@ int main() {
           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa."
           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    auto without_edns = TEST_RESOLVER_CONFIG;
+    auto without_edns = MOCK_RESOLVER_CONFIG;
     without_edns.edns = FeatureState::Disable;
 
-    auto with_edns = TEST_RESOLVER_CONFIG;
+    auto with_edns = MOCK_RESOLVER_CONFIG;
     with_edns.edns = FeatureState::Require;
 
     Resolver resolver_without_edns{without_edns};

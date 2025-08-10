@@ -7,6 +7,7 @@ Checks: >
   modernize-*,
   -modernize-use-trailing-return-type,
   -modernize-avoid-c-arrays,
+  -modernize-raw-string-literal,
   performance-*,
   -performance-enum-size,
   portability-*,

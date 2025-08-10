@@ -2,15 +2,16 @@
 #include "config.hh"
 #include "resolve.hh"
 
-int main() {
-    /// any A 1.1.1.1
-    /// any A 2.2.2.2
-    /// any TXT result
-    Resolver resolver{TEST_RESOLVER_CONFIG};
-    auto opt_rrset = resolver.resolve("any." TEST_DOMAIN, RRType::ANY);
-    ASSERT(opt_rrset.has_value());
+/// any A 1.1.1.1
+/// any A 2.2.2.2
+/// any TXT result
 
-    auto &rrset = opt_rrset.value();
+int main() {
+    Resolver resolver{UNSIGNED_RESOLVER_CONFIG};
+    auto response = resolver.resolve("any." UNSIGNED_DOMAIN, RRType::ANY);
+    ASSERT(response.has_value());
+
+    auto &rrset = response.value();
     ASSERT(rrset.size() == 3);
 
     bool found1 = false;

@@ -10,8 +10,8 @@ MockResponse mock_response = {
 };
 
 int main() {
-    Resolver resolver{TEST_RESOLVER_CONFIG};
-    auto opt_rrset = resolver.resolve(TEST_DOMAIN, RRType::A);
+    Resolver resolver{MOCK_RESOLVER_CONFIG};
+    auto opt_rrset = resolver.resolve(MOCK_DOMAIN, RRType::A);
     ASSERT(!opt_rrset.has_value());
     return EXIT_SUCCESS;
 }
