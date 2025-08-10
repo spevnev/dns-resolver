@@ -375,15 +375,18 @@ int compare_domains(const std::vector<std::string_view> &a, const std::vector<st
 bool is_domain_covered(const std::string &domain, const std::string &owner, const std::string &next_domain) {
     auto domain_labels = domain_to_labels(domain);
     auto owner_labels = domain_to_labels(owner);
-    if (compare_domains(owner_labels, domain_labels) >= 0) return false;
-
     auto next_domain_labels = domain_to_labels(next_domain);
-    if (compare_domains(owner_labels, next_domain_labels) > 0) {
-        // If the next domain comes before the owner name, it means that this is the last NSEC and
-        // its next domain is the first RR, so comparing only with the owner name is enough.
-        return true;
+
+    // If the next domain comes before the owner name, it means that this is the last NSEC
+    // and its next domain wrap back to the first RR.
+    if (compare_domains(next_domain_labels, owner_labels) < 0) {
+        // Domain must be either before owner or after the next domain.
+        return compare_domains(domain_labels, owner_labels) < 0
+               || compare_domains(next_domain_labels, domain_labels) < 0;
     }
-    return compare_domains(domain_labels, next_domain_labels) < 0;
+
+    // Otherwise, the order is normal, domain must be between the owner and the next domain.
+    return compare_domains(owner_labels, domain_labels) < 0 && compare_domains(domain_labels, next_domain_labels) < 0;
 }
 
 bool does_wildcard_cover(const std::string &wildcard_domain, const std::string &domain) {
