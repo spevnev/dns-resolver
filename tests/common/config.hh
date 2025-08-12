@@ -1,5 +1,7 @@
 #include "resolve.hh"
 
+#define VERBOSE false
+
 #define UNSIGNED_DOMAIN "unsigned.com."
 static const ResolverConfig UNSIGNED_RESOLVER_CONFIG{
     .timeout_ms = 500,
@@ -7,6 +9,7 @@ static const ResolverConfig UNSIGNED_RESOLVER_CONFIG{
     .use_root_nameservers = false,
     .use_resolve_config = false,
     .port = 1053,
+    .verbose = VERBOSE,
     .dnssec = FeatureState::Disable,
 };
 
@@ -29,6 +32,7 @@ static const ResolverConfig SIGNED_RESOLVER_CONFIG{
     .use_root_nameservers = false,
     .use_resolve_config = false,
     .port = 1053,
+    .verbose = VERBOSE,
     .dnssec = FeatureState::Require,
 };
 
@@ -51,6 +55,7 @@ static const ResolverConfig NSEC3_SIGNED_RESOLVER_CONFIG {
     .use_root_nameservers = false,
     .use_resolve_config = false,
     .port = 1053,
+    .verbose = VERBOSE,
     .dnssec = FeatureState::Require,
 };
 
@@ -62,5 +67,6 @@ static const ResolverConfig MOCK_RESOLVER_CONFIG{
     .use_root_nameservers = false,
     .use_resolve_config = false,
     .port = 1053,
+    .verbose = VERBOSE,
     .dnssec = FeatureState::Disable,
 };

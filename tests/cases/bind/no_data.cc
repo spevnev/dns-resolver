@@ -2,7 +2,7 @@
 #include "config.hh"
 #include "resolve.hh"
 
-// no-data A 1.2.3.4
+/// no-data A 1.2.3.4
 
 namespace {
 void check_response(const std::optional<std::vector<RR>> &response) {
