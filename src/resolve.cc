@@ -1,6 +1,7 @@
 #include "resolve.hh"
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <fstream>
@@ -109,7 +110,7 @@ std::string fully_qualify_domain(const std::string &domain) {
     return fqd;
 }
 
-int count_matching_labels(const std::string &a, const std::string &b) {
+int count_common_labels(const std::string &a, const std::string &b) {
     assert(!a.empty() && !b.empty());
 
     int count = 0;
@@ -612,9 +613,11 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 }
 
                 // Follow the CNAMEs before looking for the answer.
-                bool followed_cname = false;
+                std::vector<std::string> followed_cnames;
                 auto cname_rrset = get_rrset(response.answers, RRType::CNAME, nsec3_rrset, nsec_rrset, *zone);
                 for (;;) {
+                    if (std::ranges::contains(followed_cnames, sname)) throw std::runtime_error("CNAME loop");
+
                     auto cname_rr = std::ranges::find(cname_rrset, sname, &RR::domain);
                     if (cname_rr == cname_rrset.end()) break;
 
@@ -622,7 +625,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     if (rr_type == RRType::CNAME) return std::vector<RR>{std::move(*cname_rr)};
 
                     sname = std::get<CNAME>(cname_rr->data).domain;
-                    followed_cname = true;
+                    followed_cnames.push_back(cname_rr->domain);
                 }
 
                 // Look for the answer.
@@ -673,8 +676,8 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     break;
                 }
 
-                if (followed_cname) {
-                    // There is no referral and no answer, follow the CNAME.
+                if (!followed_cnames.empty()) {
+                    // No referral and no answer, but we followed CNAMEs. Restart the search with the new name.
                     return resolve_rec(sname, rr_type, depth);
                 }
 
