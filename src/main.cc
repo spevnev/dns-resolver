@@ -55,7 +55,7 @@ std::istream &operator>>(std::istream &is, FeatureState &out) {
 
 int main(int argc, char **argv) {
     try {
-        cxxopts::Options options{"resolver", "CLI DNS resolver"};
+        cxxopts::Options options{"resolver", "Iterative DNS Resolver CLI"};
         options.custom_help("[options]");
         options.positional_help("<domain>");
 
