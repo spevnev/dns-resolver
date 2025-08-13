@@ -4,12 +4,15 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <optional>
 #include <print>
 #include <queue>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 #include "dns.hh"
@@ -343,24 +346,6 @@ void Resolver::udp_receive(std::vector<uint8_t> &buffer, struct sockaddr_in requ
     buffer.resize(result);
 }
 
-bool Resolver::authenticate_rrset(const std::vector<RR> &rrset, RRType rr_type, const std::vector<RRSIG> &rrsigs,
-                                  const std::vector<RR> &nsec3_rrset, const std::vector<RR> &nsec_rrset,
-                                  const Zone &zone) const {
-    if (rrset.empty()) return true;
-
-    if (rr_type == RRType::DNSKEY && zone.dnskeys.empty()) {
-        if (!zone.dss.empty()) {
-            return dnssec::authenticate_delegation(rrset, zone.dss, rrsigs, nsec3_rrset, nsec_rrset, zone.domain);
-        }
-
-        // There is no secure delegation, so just verify that the RRSIG was signed with one of these DNSKEYs.
-        auto dnskeys = rrset_to_data<DNSKEY>(rrset);
-        return dnssec::authenticate_rrset(rrset, rrsigs, dnskeys, nsec3_rrset, nsec_rrset, zone.domain);
-    }
-
-    return dnssec::authenticate_rrset(rrset, rrsigs, zone.dnskeys, nsec3_rrset, nsec_rrset, zone.domain);
-}
-
 std::vector<RR> Resolver::get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type) {
     if (rr_type == RRType::ANY) return rrset;
 
@@ -386,6 +371,22 @@ std::vector<RR> Resolver::get_unauthenticated_rrset(std::vector<RR> &rrset, RRTy
     return result;
 }
 
+bool Resolver::authenticate_rrset(const std::vector<RR> &rrset, RRType rr_type, const std::vector<RRSIG> &rrsigs,
+                                  const std::vector<RR> &nsec3_rrset, const std::vector<RR> &nsec_rrset,
+                                  const Zone &zone) const {
+    if (rrset.empty()) return true;
+    if (rr_type == RRType::DNSKEY && zone.dnskeys.empty()) {
+        if (!zone.dss.empty()) {
+            return dnssec::authenticate_delegation(rrset, zone.dss, rrsigs, nsec3_rrset, nsec_rrset, zone.domain);
+        }
+
+        // There is no secure delegation, so just verify that the RRSIG was signed with one of these DNSKEYs.
+        auto dnskeys = rrset_to_data<DNSKEY>(rrset);
+        return dnssec::authenticate_rrset(rrset, rrsigs, dnskeys, nsec3_rrset, nsec_rrset, zone.domain);
+    }
+
+    return dnssec::authenticate_rrset(rrset, rrsigs, zone.dnskeys, nsec3_rrset, nsec_rrset, zone.domain);
+}
 std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, const std::vector<RR> &nsec3_rrset,
                                     const std::vector<RR> &nsec_rrset, const Zone &zone) const {
     assert(rr_type != RRType::ANY);
@@ -638,8 +639,10 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 auto ns_rrset = get_unauthenticated_rrset(response.authority, RRType::NS);
                 for (auto &ns_rr : ns_rrset) {
                     if (referral_zone == nullptr) {
-                        if (count_matching_labels(sname, ns_rr.domain) <= count_matching_labels(sname, zone->domain)) {
-                            throw std::runtime_error("Referral must be closer to the search name");
+                        // Only follow the referral if it brings us closer to the search name.
+                        if (count_common_labels(sname, ns_rr.domain) <= count_common_labels(sname, zone->domain)) {
+                            // Ignore unrelated referral.
+                            break;
                         }
                         referral_zone = new_zone(ns_rr.domain);
                     } else if (ns_rr.domain != referral_zone->domain) {

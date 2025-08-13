@@ -174,7 +174,7 @@ const EVP_MD *get_ds_digest_algorithm(DigestAlgorithm algorithm) {
 
 const EVP_MD *get_rrsig_digest_algorithm(SigningAlgorithm algorithm) {
     switch (algorithm) {
-        case SigningAlgorithm::RSASHA1:
+        case SigningAlgorithm::RSASHA1:         return EVP_sha1();
         case SigningAlgorithm::RSASHA256:
         case SigningAlgorithm::ECDSAP256SHA256: return EVP_sha256();
         case SigningAlgorithm::ECDSAP384SHA384: return EVP_sha384();
@@ -210,7 +210,9 @@ std::vector<std::string_view> domain_to_labels(const std::string_view &domain) {
 }
 
 std::string join_labels(const std::vector<std::string_view> &labels, size_t n) {
+    if (n == 0) return ".";
     assert(n <= labels.size());
+
     std::string result;
     auto last_n_labels = labels | std::views::take(n) | std::views::reverse;
     for (const auto &label : last_n_labels) {
