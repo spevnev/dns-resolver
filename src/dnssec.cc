@@ -486,11 +486,7 @@ std::optional<EncloserProof> verify_closest_encloser_proof(const std::vector<RR>
 
         next_closer = find_covering_nsec3(nsec3_rrset, sname, zone_domain);
 
-        if (sname == ".") return std::nullopt;
-        auto next_label_index = sname.find('.');
-        assert(next_label_index != std::string::npos);
-        if (next_label_index != sname.length() - 1) next_label_index++;
-        sname.remove_prefix(next_label_index);
+        if (!pop_label(sname)) return std::nullopt;
     }
 }
 }  // namespace

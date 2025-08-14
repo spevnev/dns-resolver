@@ -87,7 +87,7 @@ private:
     std::shared_ptr<Zone> new_root_zone() const;
     std::shared_ptr<Zone> load_resolve_config() const;
     std::shared_ptr<Zone> new_zone_from_config(const NameserverConfig &config) const;
-    std::shared_ptr<Zone> find_zone(const std::string &domain) const;
+    std::shared_ptr<Zone> find_zone(const std::string_view &domain) const;
     void zone_disable_dnssec(Zone &zone) const;
 
     void set_socket_timeout(uint64_t timeout) const;

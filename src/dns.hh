@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <format>
 #include <optional>
@@ -202,7 +203,8 @@ struct RR {
 };
 
 template <>
-struct std::formatter<RRType> : public std::formatter<string_view> {
+class std::formatter<RRType> : public std::formatter<string_view> {
+public:
     auto format(const RRType &rr_type, std::format_context &ctx) const {
         std::string output;
         switch (rr_type) {
@@ -332,3 +334,12 @@ uint16_t write_request(std::vector<uint8_t> &buffer, uint16_t payload_size, cons
                        bool enable_rd, bool enable_edns, bool enable_dnssec, bool enable_cookies, DNSCookies &cookies);
 Response read_response(const std::vector<uint8_t> &buffer, uint16_t request_id, const std::string &request_domain,
                        RRType request_rr_type);
+
+inline bool pop_label(std::string_view &domain) {
+    if (domain == ".") return false;
+    auto next_label_index = domain.find('.');
+    assert(next_label_index != std::string::npos);
+    if (next_label_index != domain.length() - 1) next_label_index++;
+    domain.remove_prefix(next_label_index);
+    return true;
+}

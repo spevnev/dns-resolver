@@ -13,8 +13,7 @@
 #include "mock_config.hh"
 
 namespace {
-class buffer_overflow_error : public std::runtime_error {
-public:
+struct buffer_overflow_error : public std::runtime_error {
     buffer_overflow_error() : std::runtime_error("Buffer is too small") {}
 };
 

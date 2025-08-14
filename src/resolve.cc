@@ -81,14 +81,18 @@ const DS ROOT_DS[]
            .data = {},
        }};
 
-class query_timeout_error : public std::runtime_error {
-public:
+struct query_timeout_error : public std::runtime_error {
     query_timeout_error() : std::runtime_error("Query timed out") {}
 };
 
-class bad_cookie_error : public std::runtime_error {
-public:
+struct bad_cookie_error : public std::runtime_error {
     bad_cookie_error() : std::runtime_error("Bad server cookie") {}
+};
+
+struct missing_referral_error : public std::runtime_error {
+    std::string zone;
+
+    missing_referral_error(std::string zone) : std::runtime_error("Missing referral"), zone(std::move(zone)) {}
 };
 
 // Check domain length, convert it to lowercase and fully qualify.
@@ -126,6 +130,10 @@ int count_common_labels(const std::string &a, const std::string &b) {
     }
     if ((a_it == a.crend() || *a_it == '.') && (b_it == b.crend() || *b_it == '.')) count++;
     return count;
+}
+
+bool is_zone_closer(const std::string &sname, const std::string &old_zone, const std::string &new_zone) {
+    return count_common_labels(sname, new_zone) > count_common_labels(sname, old_zone);
 }
 
 bool address_equals(struct sockaddr_in a, struct sockaddr_in b) {
@@ -274,7 +282,7 @@ std::shared_ptr<Zone> Resolver::new_zone_from_config(const NameserverConfig &con
     return zone;
 }
 
-std::shared_ptr<Zone> Resolver::find_zone(const std::string &domain) const {
+std::shared_ptr<Zone> Resolver::find_zone(const std::string_view &domain) const {
     std::string_view current{domain};
     for (;;) {
         auto zone_it = zones.find(current);
@@ -283,10 +291,7 @@ std::shared_ptr<Zone> Resolver::find_zone(const std::string &domain) const {
             if (!zone->is_being_resolved) return zone;
         }
 
-        auto next_label_index = current.find('.');
-        assert(next_label_index != std::string::npos);
-        if (next_label_index == current.length() - 1) return nullptr;
-        current.remove_prefix(next_label_index + 1);
+        if (!pop_label(current)) return nullptr;
     }
 }
 
@@ -375,6 +380,12 @@ bool Resolver::authenticate_rrset(const std::vector<RR> &rrset, RRType rr_type, 
                                   const std::vector<RR> &nsec3_rrset, const std::vector<RR> &nsec_rrset,
                                   const Zone &zone) const {
     if (rrset.empty()) return true;
+    if (rrsigs.empty()) return false;
+
+    // If the signer's name doesn't match the supposed zone name, it is likely due to the answering nameserver being
+    // authoritative for both zones. Throw an error to restart with the proper zone.
+    if (rrsigs[0].signer_name != zone.domain) throw missing_referral_error(rrsigs[0].signer_name);
+
     if (rr_type == RRType::DNSKEY && zone.dnskeys.empty()) {
         if (!zone.dss.empty()) {
             return dnssec::authenticate_delegation(rrset, zone.dss, rrsigs, nsec3_rrset, nsec_rrset, zone.domain);
@@ -387,6 +398,7 @@ bool Resolver::authenticate_rrset(const std::vector<RR> &rrset, RRType rr_type, 
 
     return dnssec::authenticate_rrset(rrset, rrsigs, zone.dnskeys, nsec3_rrset, nsec_rrset, zone.domain);
 }
+
 std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, const std::vector<RR> &nsec3_rrset,
                                     const std::vector<RR> &nsec_rrset, const Zone &zone) const {
     assert(rr_type != RRType::ANY);
@@ -469,7 +481,17 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
     if (search_zone != nullptr) {
         next_zone = std::move(search_zone);
     } else {
-        next_zone = find_zone(sname);
+        if (rr_type == RRType::DS) {
+            // The DS RR appears only on the upper side of a delegation (RFC4034),
+            // so ask the parent zone of the search name.
+            std::string_view parent_domain{sname};
+            pop_label(parent_domain);
+            next_zone = find_zone(parent_domain);
+        } else {
+            next_zone = find_zone(sname);
+        }
+
+        // Resolver does not know which nameserver to ask, use one from the safety belt.
         if (next_zone == nullptr) next_zone = safety_belt.next();
     }
 
@@ -639,11 +661,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 auto ns_rrset = get_unauthenticated_rrset(response.authority, RRType::NS);
                 for (auto &ns_rr : ns_rrset) {
                     if (referral_zone == nullptr) {
-                        // Only follow the referral if it brings us closer to the search name.
-                        if (count_common_labels(sname, ns_rr.domain) <= count_common_labels(sname, zone->domain)) {
-                            // Ignore unrelated referral.
-                            break;
-                        }
+                        if (!is_zone_closer(sname, zone->domain, ns_rr.domain)) break;  // Ignore referral.
                         referral_zone = new_zone(ns_rr.domain);
                     } else if (ns_rr.domain != referral_zone->domain) {
                         throw std::runtime_error(std::format("Authority contains multiple referrals: \"{}\" and \"{}\"",
@@ -708,6 +726,32 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     nameserver->sent_bad_cookie = true;
                 }
                 // Try a different nameserver.
+            } catch (const missing_referral_error &error) {
+                // There was no referral due to the nameserver being authoritative for both zones.
+                // Restart the search in the correct zone.
+
+                if (!is_zone_closer(sname, zone->domain, error.zone)) {
+                    throw std::runtime_error("Referral must be closer to the search name");
+                }
+
+                if (!zones.contains(error.zone)) {
+                    auto missing_zone = new_zone(error.zone);
+
+                    // The missing zone should use the same nameservers as the current one because they should be
+                    // authoritative for both zones (otherwise they would have included a referral in the answer).
+                    // Even if some of them aren't authoritative, they will either return a proper referral or
+                    // refuse to answer, both of which are still valid answers.
+                    missing_zone->nameservers = zone->nameservers;
+
+                    auto ds_rrset = resolve_rec(error.zone, RRType::DS, depth + 1);
+                    if (!ds_rrset.has_value()) throw std::runtime_error("Failed to fetch DS RRset");
+                    missing_zone->dss.assign_range(rrset_to_data<DS>(std::move(ds_rrset.value())));
+
+                    zones[error.zone] = std::move(missing_zone);
+                }
+
+                next_zone = zones[error.zone];
+                break;
             } catch (const std::exception &e) {
                 // Nameserver error, try asking the different nameserver if there are any left.
                 if (verbose) std::println(stderr, "Failed to resolve the domain: {}.", e.what());
