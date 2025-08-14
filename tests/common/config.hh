@@ -10,6 +10,7 @@ static const ResolverConfig UNSIGNED_RESOLVER_CONFIG{
     .use_resolve_config = false,
     .port = 1053,
     .verbose = VERBOSE,
+    .tcp = FeatureState::Disable,
     .dnssec = FeatureState::Disable,
 };
 
@@ -33,6 +34,7 @@ static const ResolverConfig SIGNED_RESOLVER_CONFIG{
     .use_resolve_config = false,
     .port = 1053,
     .verbose = VERBOSE,
+    .tcp = FeatureState::Disable,
     .dnssec = FeatureState::Require,
 };
 
@@ -56,6 +58,7 @@ static const ResolverConfig NSEC3_SIGNED_RESOLVER_CONFIG {
     .use_resolve_config = false,
     .port = 1053,
     .verbose = VERBOSE,
+    .tcp = FeatureState::Disable,
     .dnssec = FeatureState::Require,
 };
 
@@ -68,5 +71,6 @@ static const ResolverConfig MOCK_RESOLVER_CONFIG{
     .use_resolve_config = false,
     .port = 1053,
     .verbose = VERBOSE,
+    .tcp = FeatureState::Disable,
     .dnssec = FeatureState::Disable,
 };

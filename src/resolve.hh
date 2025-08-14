@@ -28,7 +28,9 @@ struct StringHash {
     size_t operator()(const std::string &str) const { return std::hash<std::string>{}(str); }
 };
 
+struct Nameserver;
 struct Zone;
+class TCPSocket;
 
 enum class FeatureState { Disable, Enable, Require };
 
@@ -43,10 +45,11 @@ struct ResolverConfig {
     uint64_t timeout_ms{5000};
     std::optional<NameserverConfig> nameserver{std::nullopt};
     bool use_root_nameservers{true};
-    bool use_resolve_config{true};
+    bool use_resolve_config{false};
     uint16_t port{DNS_PORT};
     bool verbose{false};
     bool enable_rd{true};
+    FeatureState tcp{FeatureState::Enable};
     FeatureState edns{FeatureState::Enable};
     FeatureState dnssec{FeatureState::Enable};
     FeatureState cookies{FeatureState::Enable};
@@ -60,24 +63,13 @@ public:
     std::optional<std::vector<RR>> resolve(const std::string &qname, RRType qtype = RRType::A);
 
 private:
-    // List of zones to ask when there is no information to guide zone selection.
-    class SafetyBelt {
-    public:
-        SafetyBelt(const std::queue<std::shared_ptr<Zone>> &zones) : zones(zones) {}
-
-        std::shared_ptr<Zone> next();
-
-    private:
-        std::queue<std::shared_ptr<Zone>> zones;
-    };
-
-    uint64_t query_timeout_ms, udp_timeout_ms;
+    uint64_t query_timeout_ms, net_timeout_ms, query_time_left_ms;
     uint16_t port;
     bool verbose, enable_rd;
-    FeatureState edns, dnssec, cookies;
+    FeatureState tcp, edns, dnssec, cookies;
     const std::queue<std::shared_ptr<Zone>> safety_belt_zones;
     std::default_random_engine rng;
-    int fd;
+    int udp_socket;
     std::unordered_map<std::string, std::shared_ptr<Zone>, StringHash, std::equal_to<>> zones;
     std::chrono::time_point<std::chrono::steady_clock> query_start;
 
@@ -90,11 +82,14 @@ private:
     std::shared_ptr<Zone> find_zone(const std::string_view &domain) const;
     void zone_disable_dnssec(Zone &zone) const;
 
-    void set_socket_timeout(uint64_t timeout) const;
-    void update_timeout();
+    void update_timeout(int socket);
 
     void udp_send(const std::vector<uint8_t> &buffer, struct sockaddr_in address);
     void udp_receive(std::vector<uint8_t> &buffer, struct sockaddr_in address);
+
+    void tcp_connect(const TCPSocket &tcp_socket, struct sockaddr_in address);
+    void tcp_send(const TCPSocket &tcp_socket, const std::vector<uint8_t> &buffer);
+    void tcp_receive(const TCPSocket &tcp_socket, std::vector<uint8_t> &buffer);
 
     static std::vector<RR> get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type);
     static std::vector<RR> get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type, const std::string &domain);
@@ -124,6 +119,9 @@ private:
         for (auto &rr : rrset) result.push_back(std::move(std::get<T>(rr.data)));
         return result;
     }
+
+    Response send_request(std::vector<uint8_t> &buffer, const std::string &qname, RRType qtype, Nameserver &nameserver,
+                          const Zone &zone, bool use_tcp);
 
     std::optional<std::vector<RR>> resolve_rec(const std::string &qname, RRType qtype, int depth,
                                                std::shared_ptr<Zone> search_zone = nullptr);

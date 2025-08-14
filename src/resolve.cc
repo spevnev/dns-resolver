@@ -1,6 +1,7 @@
 #include "resolve.hh"
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -52,6 +53,20 @@ struct Zone {
     }
 };
 
+class TCPSocket {
+public:
+    TCPSocket() {
+        tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
+        if (tcp_socket == -1) throw std::runtime_error("Failed to create TCP socket");
+    }
+    ~TCPSocket() { close(tcp_socket); }
+
+    operator int() const { return tcp_socket; }
+
+private:
+    int tcp_socket;
+};
+
 namespace {
 const constexpr uint64_t MIN_QUERY_TIMEOUT_MS = 300;
 const constexpr int MAX_QUERY_DEPTH = 20;
@@ -93,6 +108,24 @@ struct missing_referral_error : public std::runtime_error {
     std::string zone;
 
     missing_referral_error(std::string zone) : std::runtime_error("Missing referral"), zone(std::move(zone)) {}
+};
+
+// List of zones to ask when there is no information to guide zone selection.
+class SafetyBelt {
+public:
+    SafetyBelt(const std::queue<std::shared_ptr<Zone>> &zones) : zones(zones) {}
+
+    std::shared_ptr<Zone> next() {
+        while (!zones.empty()) {
+            auto zone = std::move(zones.front());
+            zones.pop();
+            if (zone != nullptr && !zone->is_being_resolved) return zone;
+        }
+        return nullptr;
+    }
+
+private:
+    std::queue<std::shared_ptr<Zone>> zones;
 };
 
 // Check domain length, convert it to lowercase and fully qualify.
@@ -139,14 +172,26 @@ bool is_zone_closer(const std::string &sname, const std::string &old_zone, const
 bool address_equals(struct sockaddr_in a, struct sockaddr_in b) {
     return a.sin_port == b.sin_port && a.sin_addr.s_addr == b.sin_addr.s_addr;
 }
+
+void set_socket_timeout(int socket, uint64_t timeout_ms) {
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+    if (setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0 ||  //
+        setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) {
+        throw std::runtime_error("Failed to set receive/send timeout");
+    }
+}
 }  // namespace
 
 Resolver::Resolver(const ResolverConfig &config)
     : query_timeout_ms(std::max(config.timeout_ms, MIN_QUERY_TIMEOUT_MS)),
-      udp_timeout_ms(query_timeout_ms / 3),
+      net_timeout_ms(query_timeout_ms / 3),
       port(config.port),
       verbose(config.verbose),
       enable_rd(config.enable_rd),
+      tcp(config.tcp),
       edns(config.edns),
       dnssec(config.dnssec),
       cookies(config.cookies),
@@ -161,8 +206,9 @@ Resolver::Resolver(const ResolverConfig &config)
     }
     if (dnssec == FeatureState::Require || cookies == FeatureState::Require) edns = FeatureState::Require;
 
-    fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd == -1) throw std::runtime_error("Failed to create UDP socket");
+    udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_socket == -1) throw std::runtime_error("Failed to create UDP socket");
+    set_socket_timeout(udp_socket, net_timeout_ms);
 
     // While the root NS (in . zone) are signed, their addresses (in root-servers.net zone) aren't.
     // Load the unsigned zone of the root nameservers, otherwise query will fail (due to no RRSIG).
@@ -175,7 +221,7 @@ Resolver::Resolver(const ResolverConfig &config)
     zones[root_zone->domain] = root_zone;
 }
 
-Resolver::~Resolver() { close(fd); }
+Resolver::~Resolver() { close(udp_socket); }
 
 std::optional<std::vector<RR>> Resolver::resolve(const std::string &qname, RRType qtype) {
     // DNSSEC is disabled for queries of type ANY.
@@ -186,21 +232,12 @@ std::optional<std::vector<RR>> Resolver::resolve(const std::string &qname, RRTyp
 
     try {
         query_start = std::chrono::steady_clock::now();
-        set_socket_timeout(udp_timeout_ms);
+        query_time_left_ms = query_timeout_ms;
         return resolve_rec(fully_qualify_domain(qname), qtype, 0);
     } catch (const std::exception &e) {
         if (verbose) std::println(stderr, "Failed to resolve the domain: {}.", e.what());
         return std::nullopt;
     }
-}
-
-std::shared_ptr<Zone> Resolver::SafetyBelt::next() {
-    while (!zones.empty()) {
-        auto zone = std::move(zones.front());
-        zones.pop();
-        if (zone != nullptr && !zone->is_being_resolved) return zone;
-    }
-    return nullptr;
 }
 
 std::queue<std::shared_ptr<Zone>> Resolver::init_safety_belt(const ResolverConfig &config) const {
@@ -304,31 +341,20 @@ void Resolver::zone_disable_dnssec(Zone &zone) const {
     zone.enable_dnssec = false;
 }
 
-void Resolver::set_socket_timeout(uint64_t timeout_ms) const {
-    struct timeval tv;
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0 ||  //
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) {
-        throw std::runtime_error("Failed to set receive/send timeout");
-    }
-}
-
-void Resolver::update_timeout() {
+void Resolver::update_timeout(int socket) {
     using namespace std::chrono;
 
     auto query_duration_ms = duration_cast<duration<uint64_t, std::milli>>(steady_clock::now() - query_start).count();
     if (query_duration_ms >= query_timeout_ms) throw query_timeout_error();
 
-    auto time_left_ms = query_timeout_ms - query_duration_ms;
-    if (time_left_ms < udp_timeout_ms) set_socket_timeout(time_left_ms);
+    query_time_left_ms = query_timeout_ms - query_duration_ms;
+    if (query_time_left_ms < net_timeout_ms) set_socket_timeout(socket, query_time_left_ms);
 }
 
 void Resolver::udp_send(const std::vector<uint8_t> &buffer, struct sockaddr_in address) {
     auto *socket_address = reinterpret_cast<struct sockaddr *>(&address);
-    auto result = sendto(fd, buffer.data(), buffer.size(), 0, socket_address, sizeof(address));
-    update_timeout();
+    auto result = sendto(udp_socket, buffer.data(), buffer.size(), 0, socket_address, sizeof(address));
+    update_timeout(udp_socket);
     if (result == -1 && errno == EAGAIN) throw std::runtime_error("Request timed out");
     if (result != static_cast<ssize_t>(buffer.size())) throw std::runtime_error("Failed to send the request");
 }
@@ -341,14 +367,52 @@ void Resolver::udp_receive(std::vector<uint8_t> &buffer, struct sockaddr_in requ
     // Read responses until we find the one from the same address and port as in request.
     do {
         address_length = sizeof(address);
-        result = recvfrom(fd, buffer.data(), buffer.size(), 0, socket_address, &address_length);
-        update_timeout();
+        result = recvfrom(udp_socket, buffer.data(), buffer.size(), 0, socket_address, &address_length);
+        update_timeout(udp_socket);
         if (result == -1) {
             if (errno == EAGAIN) throw std::runtime_error("Response timed out");
             throw std::runtime_error("Failed to receive the response");
         }
     } while (address_length != sizeof(address) || !address_equals(address, request_address));
     buffer.resize(result);
+}
+
+void Resolver::tcp_connect(const TCPSocket &tcp_socket, struct sockaddr_in address) {
+    auto *socket_address = reinterpret_cast<struct sockaddr *>(&address);
+    auto result = connect(tcp_socket, socket_address, sizeof(address));
+    update_timeout(tcp_socket);
+    if (result != 0) {
+        if (errno == EAGAIN) throw std::runtime_error("Connect timed out");
+        throw std::runtime_error("Failed to connect");
+    }
+}
+
+void Resolver::tcp_send(const TCPSocket &tcp_socket, const std::vector<uint8_t> &buffer) {
+    auto message_size_net = htons(buffer.size());
+    auto bytes_sent = send(tcp_socket, &message_size_net, sizeof(message_size_net), 0);
+    update_timeout(tcp_socket);
+    if (bytes_sent == -1 && errno == EAGAIN) throw std::runtime_error("Request timed out");
+    if (bytes_sent != sizeof(message_size_net)) throw std::runtime_error("Failed to send the message size");
+
+    bytes_sent = send(tcp_socket, buffer.data(), buffer.size(), 0);
+    update_timeout(tcp_socket);
+    if (bytes_sent == -1 && errno == EAGAIN) throw std::runtime_error("Request timed out");
+    if (bytes_sent != static_cast<ssize_t>(buffer.size())) throw std::runtime_error("Failed to send the request");
+}
+
+void Resolver::tcp_receive(const TCPSocket &tcp_socket, std::vector<uint8_t> &buffer) {
+    uint16_t message_size_net;
+    auto bytes_received = recv(tcp_socket, &message_size_net, sizeof(message_size_net), MSG_WAITALL);
+    update_timeout(tcp_socket);
+    if (bytes_received == -1 && errno == EAGAIN) throw std::runtime_error("Response timed out");
+    if (bytes_received != sizeof(message_size_net)) throw std::runtime_error("Failed to receive the message size");
+    auto message_size = ntohs(message_size_net);
+
+    buffer.resize(message_size);
+    bytes_received = recv(tcp_socket, buffer.data(), message_size, MSG_WAITALL);
+    update_timeout(tcp_socket);
+    if (bytes_received == -1 && errno == EAGAIN) throw std::runtime_error("Response timed out");
+    if (bytes_received != message_size) throw std::runtime_error("Failed to receive the response");
 }
 
 std::vector<RR> Resolver::get_unauthenticated_rrset(std::vector<RR> &rrset, RRType rr_type) {
@@ -464,6 +528,39 @@ std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, cons
     return result;
 }
 
+Response Resolver::send_request(std::vector<uint8_t> &buffer, const std::string &qname, RRType qtype,
+                                Nameserver &nameserver, const Zone &zone, bool use_tcp) {
+    auto payload_size
+        = nameserver.udp_payload_size.value_or(zone.enable_edns ? EDNS_UDP_PAYLOAD_SIZE : STANDARD_UDP_PAYLOAD_SIZE);
+
+    // Write and send the request.
+    buffer.reserve(payload_size);
+    buffer.clear();
+    auto id = write_request(buffer, payload_size, qname, qtype, enable_rd, zone.enable_edns, zone.enable_dnssec,
+                            zone.enable_cookies, nameserver.cookies);
+
+    struct sockaddr_in address;
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = std::get<in_addr_t>(nameserver.address);
+
+    if (use_tcp) {
+        TCPSocket tcp_socket;
+        set_socket_timeout(tcp_socket, std::min(net_timeout_ms, query_time_left_ms));
+        tcp_connect(tcp_socket, address);
+        tcp_send(tcp_socket, buffer);
+        tcp_receive(tcp_socket, buffer);
+    } else {
+        udp_send(buffer, address);
+
+        // Ensure buffer is big enough to receive the response.
+        buffer.resize(payload_size);
+        udp_receive(buffer, address);
+    }
+
+    return read_response(buffer, id, qname, qtype);
+}
+
 std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &qname, RRType qtype, int depth,
                                                      std::shared_ptr<Zone> search_zone) {
     if (depth >= MAX_QUERY_DEPTH) throw std::runtime_error("Query is too deep");
@@ -471,10 +568,6 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &qname, R
     std::vector<uint8_t> buffer;
     std::string sname{qname};
     SafetyBelt safety_belt{safety_belt_zones};
-
-    struct sockaddr_in address;
-    address.sin_family = AF_INET;
-    address.sin_port = htons(port);
 
     // Choose the initial zone.
     std::shared_ptr<Zone> next_zone;
@@ -536,32 +629,23 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &qname, R
                     nameserver->address = a_rrset[0].address;
                     for (size_t j = 1; j < a_rrset.size(); j++) zone->add_nameserver(a_rrset[j].address);
                 }
-                address.sin_addr.s_addr = std::get<in_addr_t>(nameserver->address);
 
                 if (verbose) {
                     char ip_addr_buf[INET_ADDRSTRLEN];
-                    const auto *address_str = inet_ntop(AF_INET, &address.sin_addr, ip_addr_buf, sizeof(ip_addr_buf));
+                    auto addr = std::get<in_addr_t>(nameserver->address);
+                    const auto *address_str = inet_ntop(AF_INET, &addr, ip_addr_buf, sizeof(ip_addr_buf));
                     if (address_str == nullptr) address_str = "invalid address";
                     std::println("Resolving \"{}\" using {} ({})", sname, address_str, zone->domain);
                 }
 
-                auto payload_size = nameserver->udp_payload_size.value_or(
-                    zone->enable_edns ? EDNS_UDP_PAYLOAD_SIZE : STANDARD_UDP_PAYLOAD_SIZE);
-
-                // Write and send the request.
-                buffer.reserve(payload_size);
-                buffer.clear();
-                auto id = write_request(buffer, payload_size, sname, qtype, enable_rd, zone->enable_edns,
-                                        zone->enable_dnssec, zone->enable_cookies, nameserver->cookies);
-                udp_send(buffer, address);
-
-                // Ensure buffer is big enough to receive the response.
-                buffer.resize(payload_size);
-                udp_receive(buffer, address);
-                auto response = read_response(buffer, id, sname, qtype);
-                auto rcode = response.rcode;
+                auto response = send_request(buffer, sname, qtype, *nameserver, *zone, tcp == FeatureState::Require);
+                if (response.is_truncated && tcp == FeatureState::Enable) {
+                    response = send_request(buffer, sname, qtype, *nameserver, *zone, true);
+                }
+                if (response.is_truncated) throw std::runtime_error("Response is truncated");
 
                 // Handle OPT record.
+                auto rcode = response.rcode;
                 if (zone->enable_edns) {
                     std::vector<RR> opt_rrset = get_unauthenticated_rrset(response.additional, RRType::OPT);
                     if (opt_rrset.size() == 1) {

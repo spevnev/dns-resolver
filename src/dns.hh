@@ -322,6 +322,7 @@ private:
 
 struct Response {
     bool is_authoritative;
+    bool is_truncated;
     RCode rcode;
     std::vector<RR> answers;
     std::vector<RR> authority;

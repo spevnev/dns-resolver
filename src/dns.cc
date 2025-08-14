@@ -83,7 +83,7 @@ public:
         bool is_response = (flags >> 15) & 1;
         auto opcode = static_cast<OpCode>((flags >> 11) & 0b1111);
         response.is_authoritative = (flags >> 10) & 1;
-        bool is_truncated = (flags >> 9) & 1;
+        response.is_truncated = (flags >> 9) & 1;
         response.rcode = static_cast<RCode>(flags & 0b1111);
         auto question_count = read_u16();
         auto answer_count = read_u16();
@@ -94,7 +94,6 @@ public:
         if (id != request_id) throw std::runtime_error("Wrong response ID");
         if (!is_response) throw std::runtime_error("Response is a query");
         if (opcode != OpCode::Query) throw std::runtime_error("Response has wrong opcode");
-        if (is_truncated) throw std::runtime_error("Response is truncated");
         if (question_count != 1) throw std::runtime_error("Wrong question count");
 
         // Validate question.

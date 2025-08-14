@@ -59,20 +59,21 @@ int main(int argc, char **argv) {
         options.custom_help("[options]");
         options.positional_help("<domain>");
 
-        options.add_options()                                                                        //
-            ("domain", "Domain name to resolve", cxxopts::value<std::string>())                      //
-            ("h,help", "Print usage", cxxopts::value<bool>()->default_value("false"))                //
-            ("s,server", "Nameserver domain or address", cxxopts::value<std::string>())              //
-            ("p,port", "Nameserver port", cxxopts::value<uint16_t>()->default_value("53"))           //
-            ("t,type", "Query type", cxxopts::value<RRType>()->default_value("A"))                   //
-            ("T,timeout", "Timeout in seconds", cxxopts::value<uint64_t>()->default_value("5"))      //
-            ("v,verbose", "Verbose output", cxxopts::value<bool>()->default_value("false"))          //
-            ("rdflag", "Set recursion desired flag", cxxopts::value<bool>()->default_value("true"))  //
-            ("edns", "EDNS", cxxopts::value<FeatureState>()->default_value("on"))                    //
-            ("dnssec", "DNSSEC", cxxopts::value<FeatureState>()->default_value("on"))                //
-            ("cookies", "Cookies", cxxopts::value<FeatureState>()->default_value("on"))              //
-            ("use-root", "Use root nameservers", cxxopts::value<bool>()->default_value("true"))      //
-            ("use-config", "Use nameservers from /etc/resolv.conf", cxxopts::value<bool>()->default_value("true"));
+        options.add_options()                                                                                  //
+            ("domain", "Domain name to resolve", cxxopts::value<std::string>())                                //
+            ("h,help", "Print usage", cxxopts::value<bool>()->default_value("false"))                          //
+            ("s,server", "Nameserver domain or address", cxxopts::value<std::string>())                        //
+            ("p,port", "Nameserver port", cxxopts::value<uint16_t>()->default_value("53"))                     //
+            ("t,type", "Query type", cxxopts::value<RRType>()->default_value("A"))                             //
+            ("T,timeout", "Timeout in seconds", cxxopts::value<uint64_t>()->default_value("10"))               //
+            ("v,verbose", "Verbose output", cxxopts::value<bool>()->default_value("false"))                    //
+            ("rdflag", "Set recursion desired flag", cxxopts::value<bool>()->default_value("true"))            //
+            ("tcp", "on = fallback, require = TCP-only", cxxopts::value<FeatureState>()->default_value("on"))  //
+            ("edns", "EDNS", cxxopts::value<FeatureState>()->default_value("on"))                              //
+            ("dnssec", "DNSSEC", cxxopts::value<FeatureState>()->default_value("on"))                          //
+            ("cookies", "Cookies", cxxopts::value<FeatureState>()->default_value("on"))                        //
+            ("use-root", "Use root nameservers", cxxopts::value<bool>()->default_value("true"))                //
+            ("use-config", "Use nameservers from /etc/resolv.conf", cxxopts::value<bool>()->default_value("false"));
         options.parse_positional({"domain"});
 
         auto result = options.parse(argc, argv);
@@ -99,6 +100,7 @@ int main(int argc, char **argv) {
             .port = result["port"].as<uint16_t>(),
             .verbose = result["verbose"].as<bool>(),
             .enable_rd = result["rdflag"].as<bool>(),
+            .tcp = result["tcp"].as<FeatureState>(),
             .edns = result["edns"].as<FeatureState>(),
             .dnssec = result["dnssec"].as<FeatureState>(),
             .cookies = result["cookies"].as<FeatureState>(),
