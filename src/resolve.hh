@@ -57,7 +57,7 @@ public:
     Resolver(const ResolverConfig &config = {});
     ~Resolver();
 
-    std::optional<std::vector<RR>> resolve(const std::string &domain, RRType rr_type = RRType::A);
+    std::optional<std::vector<RR>> resolve(const std::string &qname, RRType qtype = RRType::A);
 
 private:
     // List of zones to ask when there is no information to guide zone selection.
@@ -125,6 +125,6 @@ private:
         return result;
     }
 
-    std::optional<std::vector<RR>> resolve_rec(const std::string &domain, RRType rr_type, int depth,
+    std::optional<std::vector<RR>> resolve_rec(const std::string &qname, RRType qtype, int depth,
                                                std::shared_ptr<Zone> search_zone = nullptr);
 };

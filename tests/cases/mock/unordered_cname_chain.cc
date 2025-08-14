@@ -20,10 +20,10 @@ MockResponse mock_response = {
 
 int main() {
     Resolver resolver{MOCK_RESOLVER_CONFIG};
-    auto opt_rrset = resolver.resolve(MOCK_DOMAIN, RRType::A);
-    ASSERT(opt_rrset.has_value());
+    auto response = resolver.resolve(MOCK_DOMAIN, RRType::A);
+    ASSERT(response.has_value());
 
-    auto &rrset = opt_rrset.value();
+    auto &rrset = response.value();
     ASSERT(rrset.size() == 1);
 
     auto &rr = rrset[0];

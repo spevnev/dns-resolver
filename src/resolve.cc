@@ -177,17 +177,17 @@ Resolver::Resolver(const ResolverConfig &config)
 
 Resolver::~Resolver() { close(fd); }
 
-std::optional<std::vector<RR>> Resolver::resolve(const std::string &domain, RRType rr_type) {
+std::optional<std::vector<RR>> Resolver::resolve(const std::string &qname, RRType qtype) {
     // DNSSEC is disabled for queries of type ANY.
-    if (dnssec == FeatureState::Require && rr_type == RRType::ANY) return std::nullopt;
+    if (dnssec == FeatureState::Require && qtype == RRType::ANY) return std::nullopt;
 
     // RRSIG and OPT RRs cannot be queried.
-    if (rr_type == RRType::RRSIG || rr_type == RRType::OPT) return std::nullopt;
+    if (qtype == RRType::RRSIG || qtype == RRType::OPT) return std::nullopt;
 
     try {
         query_start = std::chrono::steady_clock::now();
         set_socket_timeout(udp_timeout_ms);
-        return resolve_rec(fully_qualify_domain(domain), rr_type, 0);
+        return resolve_rec(fully_qualify_domain(qname), qtype, 0);
     } catch (const std::exception &e) {
         if (verbose) std::println(stderr, "Failed to resolve the domain: {}.", e.what());
         return std::nullopt;
@@ -464,12 +464,12 @@ std::vector<RR> Resolver::get_rrset(std::vector<RR> &rrset, RRType rr_type, cons
     return result;
 }
 
-std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, RRType rr_type, int depth,
+std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &qname, RRType qtype, int depth,
                                                      std::shared_ptr<Zone> search_zone) {
     if (depth >= MAX_QUERY_DEPTH) throw std::runtime_error("Query is too deep");
 
     std::vector<uint8_t> buffer;
-    std::string sname{domain};
+    std::string sname{qname};
     SafetyBelt safety_belt{safety_belt_zones};
 
     struct sockaddr_in address;
@@ -481,7 +481,7 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
     if (search_zone != nullptr) {
         next_zone = std::move(search_zone);
     } else {
-        if (rr_type == RRType::DS) {
+        if (qtype == RRType::DS) {
             // The DS RR appears only on the upper side of a delegation (RFC4034),
             // so ask the parent zone of the search name.
             std::string_view parent_domain{sname};
@@ -551,14 +551,14 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                 // Write and send the request.
                 buffer.reserve(payload_size);
                 buffer.clear();
-                auto id = write_request(buffer, payload_size, sname, rr_type, enable_rd, zone->enable_edns,
+                auto id = write_request(buffer, payload_size, sname, qtype, enable_rd, zone->enable_edns,
                                         zone->enable_dnssec, zone->enable_cookies, nameserver->cookies);
                 udp_send(buffer, address);
 
                 // Ensure buffer is big enough to receive the response.
                 buffer.resize(payload_size);
                 udp_receive(buffer, address);
-                auto response = read_response(buffer, id, sname, rr_type);
+                auto response = read_response(buffer, id, sname, qtype);
                 auto rcode = response.rcode;
 
                 // Handle OPT record.
@@ -645,15 +645,15 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
                     if (cname_rr == cname_rrset.end()) break;
 
                     // If the query type is CNAME, return it instead of following.
-                    if (rr_type == RRType::CNAME) return std::vector<RR>{std::move(*cname_rr)};
+                    if (qtype == RRType::CNAME) return std::vector<RR>{std::move(*cname_rr)};
 
                     sname = std::get<CNAME>(cname_rr->data).domain;
                     followed_cnames.push_back(cname_rr->domain);
                 }
 
                 // Look for the answer.
-                if (rr_type == RRType::ANY) return response.answers;
-                auto result = get_rrset(response.answers, rr_type, sname, nsec3_rrset, nsec_rrset, *zone);
+                if (qtype == RRType::ANY) return response.answers;
+                auto result = get_rrset(response.answers, qtype, sname, nsec3_rrset, nsec_rrset, *zone);
                 if (!result.empty()) return result;
 
                 // Look for the referral.
@@ -699,12 +699,12 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &domain, 
 
                 if (!followed_cnames.empty()) {
                     // No referral and no answer, but we followed CNAMEs. Restart the search with the new name.
-                    return resolve_rec(sname, rr_type, depth);
+                    return resolve_rec(sname, qtype, depth);
                 }
 
                 // Look for the authenticated denial of existence.
-                if (zone->enable_dnssec && rr_type != RRType::DNSKEY) {
-                    if (!dnssec::authenticate_no_rrset(rr_type, sname, nsec3_rrset, nsec_rrset, zone->domain)) {
+                if (zone->enable_dnssec && qtype != RRType::DNSKEY) {
+                    if (!dnssec::authenticate_no_rrset(qtype, sname, nsec3_rrset, nsec_rrset, zone->domain)) {
                         throw std::runtime_error("Failed to authenticate the denial of existence");
                     }
                     return std::vector<RR>{};

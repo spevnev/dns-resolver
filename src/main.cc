@@ -104,13 +104,13 @@ int main(int argc, char **argv) {
             .cookies = result["cookies"].as<FeatureState>(),
         }};
 
-        auto opt_rrset = resolver.resolve(result["domain"].as<std::string>(), result["type"].as<RRType>());
-        if (!opt_rrset.has_value()) {
+        auto response = resolver.resolve(result["domain"].as<std::string>(), result["type"].as<RRType>());
+        if (!response.has_value()) {
             std::println(stderr, "Failed to resolve the domain.");
             return EXIT_FAILURE;
         }
 
-        const auto &rrset = opt_rrset.value();
+        const auto &rrset = response.value();
         if (rrset.empty()) {
             std::println("Domain name does not exist.");
         } else {

@@ -13,10 +13,10 @@ int main() {
     auto unknown_rr_type = static_cast<RRType>(0xFF00);
 
     Resolver resolver{MOCK_RESOLVER_CONFIG};
-    auto opt_rrset = resolver.resolve(MOCK_DOMAIN, unknown_rr_type);
-    ASSERT(opt_rrset.has_value());
+    auto response = resolver.resolve(MOCK_DOMAIN, unknown_rr_type);
+    ASSERT(response.has_value());
 
-    auto &rrset = opt_rrset.value();
+    auto &rrset = response.value();
     ASSERT(rrset.size() == 1);
 
     ASSERT(rrset[0].type == unknown_rr_type);

@@ -330,10 +330,9 @@ struct Response {
     std::optional<DNSCookies> cookies;
 };
 
-uint16_t write_request(std::vector<uint8_t> &buffer, uint16_t payload_size, const std::string &domain, RRType rr_type,
+uint16_t write_request(std::vector<uint8_t> &buffer, uint16_t payload_size, const std::string &qname, RRType qtype,
                        bool enable_rd, bool enable_edns, bool enable_dnssec, bool enable_cookies, DNSCookies &cookies);
-Response read_response(const std::vector<uint8_t> &buffer, uint16_t request_id, const std::string &request_domain,
-                       RRType request_rr_type);
+Response read_response(const std::vector<uint8_t> &buffer, uint16_t request_id, const std::string &qname, RRType qtype);
 
 inline bool pop_label(std::string_view &domain) {
     if (domain == ".") return false;

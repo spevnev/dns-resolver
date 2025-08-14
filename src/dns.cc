@@ -25,7 +25,7 @@ T random_int() {
 }
 }  // namespace
 
-uint16_t write_request(std::vector<uint8_t> &buffer, uint16_t payload_size, const std::string &domain, RRType rr_type,
+uint16_t write_request(std::vector<uint8_t> &buffer, uint16_t payload_size, const std::string &qname, RRType qtype,
                        bool enable_rd, bool enable_edns, bool enable_dnssec, bool enable_cookies, DNSCookies &cookies) {
     auto id = random_int<uint16_t>();
 
@@ -38,8 +38,8 @@ uint16_t write_request(std::vector<uint8_t> &buffer, uint16_t payload_size, cons
     write_u16(buffer, enable_edns ? 1 : 0);                    // additional count
 
     // Write question.
-    write_domain(buffer, domain);
-    write_u16(buffer, rr_type);
+    write_domain(buffer, qname);
+    write_u16(buffer, qtype);
     write_u16(buffer, DNSClass::Internet);
 
     // Write the OPT pseudo-RR (RFC6891):
@@ -74,7 +74,7 @@ class ResponseReader {
 public:
     ResponseReader(const std::vector<uint8_t> &buffer, size_t offset = 0) : buffer(buffer), offset(offset) {}
 
-    Response read_response(uint16_t request_id, const std::string &request_domain, RRType request_rr_type) {
+    Response read_response(uint16_t request_id, const std::string &qname, RRType qtype) {
         Response response;
 
         // Read response header.
@@ -98,8 +98,8 @@ public:
         if (question_count != 1) throw std::runtime_error("Wrong question count");
 
         // Validate question.
-        if (read_domain() != request_domain) throw std::runtime_error("Wrong question domain");
-        if (read_u16<RRType>() != request_rr_type) throw std::runtime_error("Wrong question type");
+        if (read_domain() != qname) throw std::runtime_error("Wrong question domain");
+        if (read_u16<RRType>() != qtype) throw std::runtime_error("Wrong question type");
         if (read_u16<DNSClass>() != DNSClass::Internet) throw std::runtime_error("Unknown DNS class");
 
         // Read the answer.
@@ -438,7 +438,7 @@ private:
     }
 };
 
-Response read_response(const std::vector<uint8_t> &buffer, uint16_t request_id, const std::string &request_domain,
-                       RRType request_rr_type) {
-    return ResponseReader{buffer}.read_response(request_id, request_domain, request_rr_type);
+Response read_response(const std::vector<uint8_t> &buffer, uint16_t request_id, const std::string &qname,
+                       RRType qtype) {
+    return ResponseReader{buffer}.read_response(request_id, qname, qtype);
 }

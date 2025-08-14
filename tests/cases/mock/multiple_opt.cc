@@ -16,7 +16,7 @@ int main() {
     config.edns = FeatureState::Require;
 
     Resolver resolver{config};
-    auto opt_rrset = resolver.resolve(MOCK_DOMAIN, RRType::A);
-    ASSERT(!opt_rrset.has_value());
+    auto response = resolver.resolve(MOCK_DOMAIN, RRType::A);
+    ASSERT(!response.has_value());
     return EXIT_SUCCESS;
 }

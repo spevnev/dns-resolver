@@ -12,7 +12,7 @@ MockResponse mock_response = {
 
 int main() {
     Resolver resolver{MOCK_RESOLVER_CONFIG};
-    auto opt_rrset = resolver.resolve(MOCK_DOMAIN, RRType::A);
-    ASSERT(!opt_rrset.has_value());
+    auto response = resolver.resolve(MOCK_DOMAIN, RRType::A);
+    ASSERT(!response.has_value());
     return EXIT_SUCCESS;
 }
