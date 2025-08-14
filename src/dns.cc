@@ -417,6 +417,8 @@ private:
         }
 
         if (offset + data_length > buffer.size()) throw std::runtime_error("Respose is too short");
+
+        auto rdata_offset = offset;
         switch (rr.type) {
             case RRType::A:      rr.data = A{.address = read<in_addr_t>()}; break;
             case RRType::NS:     rr.data = NS{.domain = read_domain()}; break;
@@ -434,6 +436,8 @@ private:
             case RRType::ANY:    throw std::runtime_error("Invalid response RR of type ANY");
             default:             offset += data_length; break;
         }
+        if (offset - rdata_offset != data_length) throw std::runtime_error("Invalid rdata length");
+
         return rr;
     }
 };
