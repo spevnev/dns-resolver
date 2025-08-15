@@ -108,8 +108,9 @@ EVP_PKEY_unique_ptr load_eddsa_key(const std::vector<uint8_t> &dnskey, int type)
 EVP_PKEY_unique_ptr load_dnskey(const DNSKEY &dnskey) {
     switch (dnskey.algorithm) {
         case SigningAlgorithm::RSASHA1:
+        case SigningAlgorithm::RSASHA1NSEC3SHA1:
         case SigningAlgorithm::RSASHA256:
-        case SigningAlgorithm::RSASHA512: return load_rsa_key(dnskey.key);
+        case SigningAlgorithm::RSASHA512:        return load_rsa_key(dnskey.key);
         case SigningAlgorithm::ECDSAP256SHA256:
             if (dnskey.key.size() != 64) throw std::runtime_error("Invalid key length");
             return load_ecdsa_key(dnskey.key, "prime256v1");
@@ -149,10 +150,11 @@ std::vector<uint8_t> load_ecdsa_signature(const std::vector<uint8_t> &rrsig) {
 std::vector<uint8_t> load_signature(const RRSIG &rrsig) {
     switch (rrsig.algorithm) {
         case SigningAlgorithm::RSASHA1:
+        case SigningAlgorithm::RSASHA1NSEC3SHA1:
         case SigningAlgorithm::RSASHA256:
         case SigningAlgorithm::RSASHA512:
         case SigningAlgorithm::ED25519:
-        case SigningAlgorithm::ED448:     return rrsig.signature;
+        case SigningAlgorithm::ED448:            return rrsig.signature;
         case SigningAlgorithm::ECDSAP256SHA256:
             if (rrsig.signature.size() != 64) throw std::runtime_error("Invalid RRSIG size");
             return load_ecdsa_signature(rrsig.signature);
@@ -174,14 +176,15 @@ const EVP_MD *get_ds_digest_algorithm(DigestAlgorithm algorithm) {
 
 const EVP_MD *get_rrsig_digest_algorithm(SigningAlgorithm algorithm) {
     switch (algorithm) {
-        case SigningAlgorithm::RSASHA1:         return EVP_sha1();
+        case SigningAlgorithm::RSASHA1:
+        case SigningAlgorithm::RSASHA1NSEC3SHA1: return EVP_sha1();
         case SigningAlgorithm::RSASHA256:
-        case SigningAlgorithm::ECDSAP256SHA256: return EVP_sha256();
-        case SigningAlgorithm::ECDSAP384SHA384: return EVP_sha384();
-        case SigningAlgorithm::RSASHA512:       return EVP_sha512();
+        case SigningAlgorithm::ECDSAP256SHA256:  return EVP_sha256();
+        case SigningAlgorithm::ECDSAP384SHA384:  return EVP_sha384();
+        case SigningAlgorithm::RSASHA512:        return EVP_sha512();
         case SigningAlgorithm::ED25519:
-        case SigningAlgorithm::ED448:           return nullptr;
-        default:                                throw std::runtime_error("Unknown digest algorithm");
+        case SigningAlgorithm::ED448:            return nullptr;
+        default:                                 throw std::runtime_error("Unknown digest algorithm");
     }
 }
 
@@ -351,13 +354,14 @@ std::unique_ptr<RRSIGDigest> new_rrsig_digest(EVP_MD_CTX *ctx, const DNSKEY &dns
 
     switch (dnskey.algorithm) {
         case SigningAlgorithm::RSASHA1:
+        case SigningAlgorithm::RSASHA1NSEC3SHA1:
         case SigningAlgorithm::RSASHA256:
         case SigningAlgorithm::ECDSAP256SHA256:
         case SigningAlgorithm::ECDSAP384SHA384:
-        case SigningAlgorithm::RSASHA512:       return std::make_unique<RRSIGStreamDigest>(ctx, algorithm, pkey.get());
+        case SigningAlgorithm::RSASHA512:        return std::make_unique<RRSIGStreamDigest>(ctx, algorithm, pkey.get());
         case SigningAlgorithm::ED25519:
-        case SigningAlgorithm::ED448:           return std::make_unique<RRSIGOneShotDigest>(ctx, algorithm, pkey.get());
-        default:                                throw std::runtime_error("Unknown digest algorithm");
+        case SigningAlgorithm::ED448:            return std::make_unique<RRSIGOneShotDigest>(ctx, algorithm, pkey.get());
+        default:                                 throw std::runtime_error("Unknown digest algorithm");
     }
 }
 

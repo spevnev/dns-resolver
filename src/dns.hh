@@ -78,6 +78,7 @@ enum class OptionCode : uint16_t {
 // https://www.iana.org/assignments/dns-sec-alg-numbers/dns-sec-alg-numbers.xhtml
 enum class SigningAlgorithm : uint8_t {
     RSASHA1 = 5,
+    RSASHA1NSEC3SHA1 = 7,
     RSASHA256 = 8,
     RSASHA512 = 10,
     ECDSAP256SHA256 = 13,
