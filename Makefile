@@ -1,7 +1,11 @@
-SRC_DIR         := src
-OUT_DIR         := build
-EXTERNAL_DIR    := external
-INSTALL_DIR     ?= /usr/local/bin
+prefix      := /usr/local
+exec_prefix := $(prefix)
+bindir      := $(exec_prefix)/bin
+
+SRC_DIR      := src
+OUT_DIR      := build
+EXTERNAL_DIR := external
+
 TEST_COMMON_DIR := tests/common
 TEST_MOCK_DIR   := tests/mock
 BIND_CASES_DIR  := tests/cases/bind
@@ -9,100 +13,98 @@ MOCK_CASES_DIR  := tests/cases/mock
 
 BIN_NAME := resolve
 BIN_PATH := $(OUT_DIR)/$(BIN_NAME)
+BIN_INSTALL_PATH := $(DESTDIR)$(bindir)/$(BIN_NAME)
 
-CC      := g++
-CFLAGS  := -O2 -std=c++23 -Wall -Wextra -pedantic -I $(SRC_DIR) -MMD -MP
-DEBUG_CFLAGS := -g3 -fsanitize=address,leak,undefined
-LDFLAGS := $(shell pkg-config --libs "openssl >= 3.0")
+CPPFLAGS := -I $(SRC_DIR)
+CXXFLAGS := -std=c++23 -Wall -Wextra -pedantic -MMD -MP -O2
+DEBUG_CXXFLAGS := -g3 -fsanitize=address,leak,undefined
 
-BIN_CFLAGS   := $(CFLAGS)
-BIND_TEST_CFLAGS  := $(CFLAGS) $(DEBUG_CFLAGS)
-# Mock tests must not include debug flags because libasan(enable by `fsanitize`) intercepts the
-# required functions(recvfrom and sendto) thus preventing the mocked functions from being used.
-MOCK_TEST_CFLAGS  := $(CFLAGS)
+LIBRARIES := "openssl >= 3.0"
+CPPFLAGS  += $(shell pkg-config --cflags-only-I $(LIBRARIES))
+CXXFLAGS  += $(shell pkg-config --cflags-only-other $(LIBRARIES))
+LDFLAGS   += $(shell pkg-config --libs-only-L $(LIBRARIES))
+LDLIBS    += $(shell pkg-config --libs-only-l $(LIBRARIES))
+
+BIN_CXXFLAGS  := $(CXXFLAGS)
+BIN_CPPFLAGS  := $(CPPFLAGS) -I $(EXTERNAL_DIR)/cxxopts
+BIND_CXXFLAGS := $(CXXFLAGS) $(DEBUG_CXXFLAGS)
+BIND_CPPFLAGS := $(CPPFLAGS) -I $(TEST_COMMON_DIR)
+# Mock tests must not include debug flags because they contain `-fsanitize` which prevents the mock functions from being used.
+MOCK_CXXFLAGS := $(CXXFLAGS)
+MOCK_CPPFLAGS := $(CPPFLAGS) -I $(TEST_COMMON_DIR) -I $(TEST_MOCK_DIR)
 
 ifeq ($(DEBUG), 1)
-	BIN_CFLAGS += $(DEBUG_CFLAGS)
+	BIN_CXXFLAGS += $(DEBUG_CXXFLAGS)
 endif
 
-BIN_SRCS := $(shell find $(SRC_DIR) -type f -name '*.cc')
+BIN_SRCS := $(wildcard $(SRC_DIR)/*.cc)
 BIN_OBJS := $(patsubst %.cc, $(OUT_DIR)/%.o, $(BIN_SRCS))
-BIN_DEPS := $(patsubst %.o, %.d, $(BIN_OBJS))
+BIN_DEPS := $(BIN_OBJS:.o=.d)
 
 TEST_COMMON_SRCS    := $(filter-out $(SRC_DIR)/main.cc, $(BIN_SRCS))
-BIND_COMMON_OBJ_DIR := $(OUT_DIR)/$(TEST_COMMON_DIR)/bind
-BIND_COMMON_OBJS    := $(patsubst %.cc, $(BIND_COMMON_OBJ_DIR)/%.o, $(TEST_COMMON_SRCS))
-BIND_COMMON_DEPS    := $(patsubst %.o, %.d, $(BIND_COMMON_OBJS))
-MOCK_COMMON_OBJ_DIR := $(OUT_DIR)/$(TEST_COMMON_DIR)/mock
-MOCK_COMMON_OBJS    := $(patsubst %.cc, $(MOCK_COMMON_OBJ_DIR)/%.o, $(TEST_COMMON_SRCS))
-MOCK_COMMON_DEPS    := $(patsubst %.o, %.d, $(MOCK_COMMON_OBJS))
+BIND_COMMON_OBJ_DIR := $(OUT_DIR)/tests/common/bind
+BIND_COMMON_OBJS    := $(patsubst $(SRC_DIR)/%.cc, $(BIND_COMMON_OBJ_DIR)/%.o, $(TEST_COMMON_SRCS))
+BIND_COMMON_DEPS    := $(BIND_COMMON_OBJS:.o=.d)
+MOCK_COMMON_OBJ_DIR := $(OUT_DIR)/tests/common/mock
+MOCK_COMMON_OBJS    := $(patsubst $(SRC_DIR)/%.cc, $(MOCK_COMMON_OBJ_DIR)/%.o, $(TEST_COMMON_SRCS))
+MOCK_COMMON_DEPS    := $(MOCK_COMMON_OBJS:.o=.d)
 
-TEST_MOCK_OBJ_DIR := $(OUT_DIR)/$(TEST_MOCK_DIR)
-TEST_MOCK_SRCS    := $(shell find $(TEST_MOCK_DIR) -type f -name '*.cc')
-TEST_MOCK_OBJS    := $(patsubst %.cc, $(TEST_MOCK_OBJ_DIR)/%.o, $(TEST_MOCK_SRCS))
-TEST_MOCK_DEPS    := $(patsubst %.o, %.d, $(TEST_MOCK_OBJS))
+TEST_MOCK_OBJ_DIR   := $(OUT_DIR)/tests/mock
+TEST_MOCK_SRCS      := $(wildcard $(TEST_MOCK_DIR)/*.cc)
+TEST_MOCK_OBJS      := $(patsubst $(TEST_MOCK_DIR)/%.cc, $(TEST_MOCK_OBJ_DIR)/%.o, $(TEST_MOCK_SRCS))
+TEST_MOCK_DEPS      := $(TEST_MOCK_OBJS:.o=.d)
 
-BIND_CASES_OUT_DIR  := $(OUT_DIR)/$(BIND_CASES_DIR)
-BIND_CASES_SRCS     := $(shell find $(BIND_CASES_DIR) -type f -name '*.cc')
+BIND_CASES_OUT_DIR  := $(OUT_DIR)/tests/cases/bind
+BIND_CASES_SRCS     := $(wildcard $(BIND_CASES_DIR)/*.cc)
 BIND_CASES          := $(patsubst $(BIND_CASES_DIR)/%.cc, $(BIND_CASES_OUT_DIR)/%, $(BIND_CASES_SRCS))
 BIND_CASES_DEPS     := $(addsuffix .d, $(BIND_CASES))
 
-MOCK_CASES_OUT_DIR  := $(OUT_DIR)/$(MOCK_CASES_DIR)
-MOCK_CASES_SRCS     := $(shell find $(MOCK_CASES_DIR) -type f -name '*.cc')
+MOCK_CASES_OUT_DIR  := $(OUT_DIR)/tests/cases/mock
+MOCK_CASES_SRCS     := $(wildcard $(MOCK_CASES_DIR)/*.cc)
 MOCK_CASES          := $(patsubst $(MOCK_CASES_DIR)/%.cc, $(MOCK_CASES_OUT_DIR)/%, $(MOCK_CASES_SRCS))
 MOCK_CASES_DEPS     := $(addsuffix .d, $(MOCK_CASES))
 
-.PHONY: all clean build test
-all: build
-
-clean:
-	rm -rf $(OUT_DIR)
-
-build: $(BIN_PATH)
-
-install: build
-	install -D -m755 $(BIN_PATH) $(INSTALL_DIR)/$(BIN_NAME)
-
-uninstall:
-	rm $(INSTALL_DIR)/$(BIN_NAME)
-
-$(BIN_PATH): $(BIN_OBJS)
-	@mkdir -p $(@D)
-	$(CC) $(BIN_CFLAGS) -o $@ $^ $(LDFLAGS)
-
-$(OUT_DIR)/%.o: %.cc
-	@mkdir -p $(@D)
-	$(CC) $(BIN_CFLAGS) -I $(EXTERNAL_DIR)/cxxopts -o $@ -c $<
+.PHONY: all test clean install uninstall
+all: $(BIN_PATH)
 
 test: $(BIND_CASES) $(MOCK_CASES)
 	@./tests/test.sh
 
-$(BIND_CASES_OUT_DIR)/%: $(BIND_CASES_OUT_DIR)/%.o $(BIND_COMMON_OBJS)
-	@mkdir -p $(@D)
-	$(CC) $(BIND_TEST_CFLAGS) -o $@ $^ $(LDFLAGS)
+clean:
+	rm -rf $(OUT_DIR)
 
-$(BIND_CASES_OUT_DIR)/%.o: $(BIND_CASES_DIR)/%.cc
-	@mkdir -p $(@D)
-	$(CC) $(BIND_TEST_CFLAGS) -I $(TEST_COMMON_DIR) -o $@ -c $<
+install:
+	install -D -m755 $(BIN_PATH) $(BIN_INSTALL_PATH)
 
-$(BIND_COMMON_OBJ_DIR)/%.o: %.cc
-	@mkdir -p $(@D)
-	$(CC) $(BIND_TEST_CFLAGS) -o $@ -c $<
+uninstall:
+	rm $(BIN_INSTALL_PATH)
 
-$(MOCK_CASES_OUT_DIR)/%: $(MOCK_CASES_OUT_DIR)/%.o $(TEST_MOCK_OBJS) $(MOCK_COMMON_OBJS)
+$(BIN_PATH): $(BIN_OBJS)
 	@mkdir -p $(@D)
-	$(CC) $(MOCK_TEST_CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CXX) $(BIN_CXXFLAGS) $(LDFLAGS) $^ -o $@ $(LDLIBS)
 
-$(MOCK_CASES_OUT_DIR)/%.o: $(MOCK_CASES_DIR)/%.cc
+$(OUT_DIR)/%.o: %.cc
 	@mkdir -p $(@D)
-	$(CC) $(MOCK_TEST_CFLAGS) -I $(TEST_COMMON_DIR) -I $(TEST_MOCK_DIR) -o $@ -c $<
+	$(CXX) $(BIN_CPPFLAGS) $(BIN_CXXFLAGS) -c $< -o $@
 
-$(MOCK_COMMON_OBJ_DIR)/%.o: %.cc
+$(BIND_COMMON_OBJ_DIR)/%.o: $(SRC_DIR)/%.cc
 	@mkdir -p $(@D)
-	$(CC) $(MOCK_TEST_CFLAGS) -o $@ -c $<
+	$(CXX) $(BIND_CPPFLAGS) $(BIND_CXXFLAGS) -c $< -o $@
 
-$(TEST_MOCK_OBJ_DIR)/%.o: %.cc
+$(BIND_CASES_OUT_DIR)/%: $(BIND_CASES_DIR)/%.cc $(BIND_COMMON_OBJS)
 	@mkdir -p $(@D)
-	$(CC) $(MOCK_TEST_CFLAGS) -I $(TEST_COMMON_DIR) -o $@ -c $<
+	$(CXX) $(BIND_CPPFLAGS) $(BIND_CXXFLAGS) $(LDFLAGS) $^ -o $@ $(LDLIBS)
+
+$(MOCK_COMMON_OBJ_DIR)/%.o: $(SRC_DIR)/%.cc
+	@mkdir -p $(@D)
+	$(CXX) $(MOCK_CPPFLAGS) $(MOCK_CXXFLAGS) -c $< -o $@
+
+$(TEST_MOCK_OBJ_DIR)/%.o: $(TEST_MOCK_DIR)/%.cc
+	@mkdir -p $(@D)
+	$(CXX) $(MOCK_CPPFLAGS) $(MOCK_CXXFLAGS) -c $< -o $@
+
+$(MOCK_CASES_OUT_DIR)/%: $(MOCK_CASES_DIR)/%.cc $(TEST_MOCK_OBJS) $(MOCK_COMMON_OBJS)
+	@mkdir -p $(@D)
+	$(CXX) $(MOCK_CPPFLAGS) $(MOCK_CXXFLAGS) $(LDFLAGS) $^ -o $@ $(LDLIBS)
 
 -include $(BIN_DEPS) $(BIND_COMMON_DEPS) $(MOCK_COMMON_DEPS) $(TEST_MOCK_DEPS) $(BIND_CASES_DEPS) $(MOCK_CASES_DEPS)
