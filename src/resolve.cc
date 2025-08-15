@@ -605,8 +605,12 @@ std::optional<std::vector<RR>> Resolver::resolve_rec(const std::string &qname, R
             }
         }
 
-        // Try asking every nameserver in random order.
+        // Ask nameservers in random order, starting with the ones with addresses.
         std::ranges::shuffle(zone->nameservers, rng);
+        std::ranges::sort(zone->nameservers, std::greater<>{}, [](const auto &nameserver) {
+            return std::holds_alternative<in_addr_t>(nameserver->address);
+        });
+
         for (size_t i = 0; i < zone->nameservers.size(); i++) {
             auto nameserver = zone->nameservers[i];
             try {
