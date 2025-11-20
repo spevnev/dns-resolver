@@ -1,128 +1,142 @@
+#include <cstdint>
 #include <cstdlib>
-#include <memory>
 #include <optional>
 #include <print>
 #include <string>
+#include "args.h"
 #include "dns.hh"
 #include "resolve.hh"
 
-#define CXXOPTS_NO_REGEX
-#include <cxxopts.hpp>
+namespace {
+const char *RR_TYPES[] = {
+    "A", "NS", "CNAME", "SOA", "HINFO", "TXT", "AAAA", "DS", "NSEC", "DNSKEY", "NSEC3", "ANY", nullptr,
+};
+const char *FEATURE_STATES[] = {"off", "disable", "on", "enable", "require", nullptr};
 
-// NOLINTNEXTLINE
-std::istream &operator>>(std::istream &is, RRType &out) {
-    std::string str;
-    is >> str;
-    for (auto &ch : str) ch = std::toupper(ch);
-
-    // NOLINTBEGIN
-    if (str == "A") out = RRType::A;
-    else if (str == "NS") out = RRType::NS;
-    else if (str == "CNAME") out = RRType::CNAME;
-    else if (str == "SOA") out = RRType::SOA;
-    else if (str == "HINFO") out = RRType::HINFO;
-    else if (str == "TXT") out = RRType::TXT;
-    else if (str == "AAAA") out = RRType::AAAA;
-    else if (str == "DS") out = RRType::DS;
-    else if (str == "NSEC") out = RRType::NSEC;
-    else if (str == "DNSKEY") out = RRType::DNSKEY;
-    else if (str == "NSEC3") out = RRType::NSEC3;
-    else if (str == "ANY") out = RRType::ANY;
-    else is.setstate(std::ios::failbit);
-    // NOLINTEND
-
-    return is;
+std::optional<RRType> parse_rr_type(const std::string &str) {
+    if (str == "A") return RRType::A;
+    if (str == "NS") return RRType::NS;
+    if (str == "CNAME") return RRType::CNAME;
+    if (str == "SOA") return RRType::SOA;
+    if (str == "HINFO") return RRType::HINFO;
+    if (str == "TXT") return RRType::TXT;
+    if (str == "AAAA") return RRType::AAAA;
+    if (str == "DS") return RRType::DS;
+    if (str == "NSEC") return RRType::NSEC;
+    if (str == "DNSKEY") return RRType::DNSKEY;
+    if (str == "NSEC3") return RRType::NSEC3;
+    if (str == "ANY") return RRType::ANY;
+    return std::nullopt;
 }
 
-// NOLINTNEXTLINE
-std::istream &operator>>(std::istream &is, FeatureState &out) {
-    std::string str;
-    is >> str;
-    for (auto &ch : str) ch = std::tolower(ch);
-
-    if (str == "on" || str == "true" || str == "enable") {
-        out = FeatureState::Enable;
-    } else if (str == "off" || str == "false" || str == "disable") {
-        out = FeatureState::Disable;
-    } else if (str == "require") {
-        out = FeatureState::Require;
-    } else {
-        is.setstate(std::ios::failbit);
-    }
-
-    return is;
+std::optional<FeatureState> parse_feature_state(const std::string &str) {
+    if (str == "off" || str == "disable") return FeatureState::Disable;
+    if (str == "on" || str == "enable") return FeatureState::Enable;
+    if (str == "require") return FeatureState::Require;
+    return std::nullopt;
 }
+};  // namespace
 
 int main(int argc, char **argv) {
-    try {
-        cxxopts::Options options{"resolver", "Iterative DNS Resolver CLI"};
-        options.custom_help("[options]");
-        options.positional_help("<domain>");
+    ArgsCpp args;
 
-        options.add_options()                                                                                  //
-            ("domain", "Domain name to resolve", cxxopts::value<std::string>())                                //
-            ("h,help", "Print usage", cxxopts::value<bool>()->default_value("false"))                          //
-            ("s,server", "Nameserver domain or address", cxxopts::value<std::string>())                        //
-            ("p,port", "Nameserver port", cxxopts::value<uint16_t>()->default_value("53"))                     //
-            ("t,type", "Query type", cxxopts::value<RRType>()->default_value("A"))                             //
-            ("T,timeout", "Timeout in seconds", cxxopts::value<uint64_t>()->default_value("10"))               //
-            ("v,verbose", "Verbose output", cxxopts::value<bool>()->default_value("false"))                    //
-            ("rdflag", "Set recursion desired flag", cxxopts::value<bool>()->default_value("true"))            //
-            ("tcp", "on = fallback, require = TCP-only", cxxopts::value<FeatureState>()->default_value("on"))  //
-            ("edns", "EDNS", cxxopts::value<FeatureState>()->default_value("on"))                              //
-            ("dnssec", "DNSSEC", cxxopts::value<FeatureState>()->default_value("on"))                          //
-            ("cookies", "Cookies", cxxopts::value<FeatureState>()->default_value("on"))                        //
-            ("use-root", "Use root nameservers", cxxopts::value<bool>()->default_value("true"))                //
-            ("use-config", "Use nameservers from /etc/resolv.conf", cxxopts::value<bool>()->default_value("false"));
-        options.parse_positional({"domain"});
+    args.option_help([](ArgsCpp &args, const char *program_name) {
+        std::println("{} - Iterative DNS Resolver CLI", program_name);
+        std::println();
+        std::println("Usage:");
+        std::println("  {} [options] <domain>", program_name);
+        std::println("  {} completion <bash|zsh|fish>", program_name);
+        std::println();
+        args.print_options();
+    });
 
-        auto result = options.parse(argc, argv);
-        if (result.contains("help")) {
-            std::print("{}", options.help());
-            return EXIT_SUCCESS;
-        }
+    const auto &server = args.option_string("server", "Nameserver domain or address").short_name('s');
+    const auto &port = args.option_long("port", "Nameserver port").short_name('p').default_value(53);
+    const auto &type = args.option_enum_string("type", "Query type", RR_TYPES).short_name('t').default_value("A");
+    const auto &timeout = args.option_long("timeout", "Timeout in seconds").short_name('T').default_value(10);
+    const auto &verbose = args.option_flag("verbose", "Verbose output").short_name('v');
+    const auto &rdflag = args.option_flag("rdflag", "Set recursion desired flag");
+    const auto &tcp
+        = args.option_enum_string("tcp", "on = fallback, require = TCP-only", FEATURE_STATES).default_value("on");
+    const auto &edns = args.option_enum_string("edns", "EDNS", FEATURE_STATES).default_value("on");
+    const auto &dnssec = args.option_enum_string("dnssec", "DNSSEC", FEATURE_STATES).default_value("on");
+    const auto &cookies = args.option_enum_string("cookies", "DNS Cookies", FEATURE_STATES).default_value("on");
+    const auto &no_root = args.option_flag("no-root", "Don't use root nameservers");
+    const auto &use_config = args.option_flag("use-config", "Use nameservers from /etc/resolv.conf");
 
-        if (!result.unmatched().empty()) {
-            std::println(stderr, "Unmatched arguments: {}", result.unmatched());
-            return EXIT_FAILURE;
-        }
+    char **pos_args;
+    int pos_args_len = args.parse_args(argc, argv, pos_args);
 
-        std::optional<NameserverConfig> nameserver = std::nullopt;
-        if (result.contains("server")) {
-            nameserver = NameserverConfig{.address = result["server"].as<std::string>()};
-        }
-
-        Resolver resolver{{
-            .timeout_ms = result["timeout"].as<uint64_t>() * 1000,
-            .nameserver = nameserver,
-            .use_root_nameservers = result["use-root"].as<bool>(),
-            .use_resolve_config = result["use-config"].as<bool>(),
-            .port = result["port"].as<uint16_t>(),
-            .verbose = result["verbose"].as<bool>(),
-            .enable_rd = result["rdflag"].as<bool>(),
-            .tcp = result["tcp"].as<FeatureState>(),
-            .edns = result["edns"].as<FeatureState>(),
-            .dnssec = result["dnssec"].as<FeatureState>(),
-            .cookies = result["cookies"].as<FeatureState>(),
-        }};
-
-        auto response = resolver.resolve(result["domain"].as<std::string>(), result["type"].as<RRType>());
-        if (!response.has_value()) {
-            std::println(stderr, "Failed to resolve the domain.");
-            return EXIT_FAILURE;
-        }
-
-        const auto &rrset = response.value();
-        if (rrset.empty()) {
-            std::println("Domain name does not exist.");
-        } else {
-            std::println("Answer:");
-            for (const auto &rr : rrset) std::println("{}", rr);
-        }
-
-        return EXIT_SUCCESS;
-    } catch (const cxxopts::exceptions::exception &e) {
-        std::println(stderr, "{}", e.what());
+    if (pos_args_len != 1) {
+        std::println(stderr, "Invalid arguments: expected domain but found {} arguments", pos_args_len);
         return EXIT_FAILURE;
     }
+
+    if (!(1 <= port && port <= UINT16_MAX)) {
+        std::println(stderr, "Invalid port {}", port.value());
+        return EXIT_FAILURE;
+    }
+
+    auto qtype = parse_rr_type(type);
+    if (qtype == std::nullopt) {
+        std::println(stderr, "Invalid query type \"{}\"", type.value());
+        return EXIT_FAILURE;
+    }
+
+    auto tcp_state = parse_feature_state(tcp);
+    if (tcp_state == std::nullopt) {
+        std::println(stderr, "Invalid TCP state \"{}\"", tcp.value());
+        return EXIT_FAILURE;
+    }
+
+    auto edns_state = parse_feature_state(edns);
+    if (edns_state == std::nullopt) {
+        std::println(stderr, "Invalid EDNS state \"{}\"", edns.value());
+        return EXIT_FAILURE;
+    }
+
+    auto dnssec_state = parse_feature_state(dnssec);
+    if (dnssec_state == std::nullopt) {
+        std::println(stderr, "Invalid DNSSEC state \"{}\"", dnssec.value());
+        return EXIT_FAILURE;
+    }
+
+    auto cookies_state = parse_feature_state(cookies);
+    if (cookies_state == std::nullopt) {
+        std::println(stderr, "Invalid DNS Cookies state \"{}\"", cookies.value());
+        return EXIT_FAILURE;
+    }
+
+    std::optional<NameserverConfig> nameserver = std::nullopt;
+    if (server != nullptr) nameserver = NameserverConfig{.address = server};
+
+    Resolver resolver{{
+        .timeout_ms = static_cast<uint64_t>(timeout) * 1000,
+        .nameserver = nameserver,
+        .use_root_nameservers = !no_root,
+        .use_resolve_config = use_config,
+        .port = static_cast<uint16_t>(port),
+        .verbose = verbose,
+        .enable_rd = rdflag,
+        .tcp = tcp_state.value(),
+        .edns = edns_state.value(),
+        .dnssec = dnssec_state.value(),
+        .cookies = cookies_state.value(),
+    }};
+
+    auto response = resolver.resolve(pos_args[0], qtype.value());
+    if (!response.has_value()) {
+        std::println(stderr, "Failed to resolve the domain.");
+        return EXIT_FAILURE;
+    }
+
+    const auto &rrset = response.value();
+    if (rrset.empty()) {
+        std::println("Domain name does not exist.");
+    } else {
+        std::println("Answer:");
+        for (const auto &rr : rrset) std::println("{}", rr);
+    }
+
+    return EXIT_SUCCESS;
 }

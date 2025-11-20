@@ -2,10 +2,8 @@ prefix      := /usr/local
 exec_prefix := $(prefix)
 bindir      := $(exec_prefix)/bin
 
-SRC_DIR      := src
-OUT_DIR      := build
-EXTERNAL_DIR := external
-
+SRC_DIR         := src
+OUT_DIR         := build
 TEST_COMMON_DIR := tests/common
 TEST_MOCK_DIR   := tests/mock
 BIND_CASES_DIR  := tests/cases/bind
@@ -26,7 +24,7 @@ LDFLAGS   += $(shell pkg-config --libs-only-L $(LIBRARIES))
 LDLIBS    += $(shell pkg-config --libs-only-l $(LIBRARIES))
 
 BIN_CXXFLAGS  := $(CXXFLAGS)
-BIN_CPPFLAGS  := $(CPPFLAGS) -I $(EXTERNAL_DIR)/cxxopts
+BIN_CPPFLAGS  := $(CPPFLAGS) -I vendor
 BIND_CXXFLAGS := $(CXXFLAGS) $(DEBUG_CXXFLAGS)
 BIND_CPPFLAGS := $(CPPFLAGS) -I $(TEST_COMMON_DIR)
 # Mock tests must not include debug flags because they contain `-fsanitize` which prevents the mock functions from being used.

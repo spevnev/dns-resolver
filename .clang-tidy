@@ -1,5 +1,4 @@
 Checks: >
-  clang-diagnostic-*,
   clang-analyzer-*,
   bugprone-*,
   -bugprone-easily-swappable-parameters,
